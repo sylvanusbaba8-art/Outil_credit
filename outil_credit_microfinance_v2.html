@@ -1,0 +1,2456 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Outil Crédit Microfinance v2</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getFirestore, collection, doc, setDoc, addDoc, getDoc, getDocs, updateDoc, deleteDoc, query, orderBy, serverTimestamp }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDCbdeMaBPzjvdY7yyjqoj3Tj4eXGNJsG4",
+    authDomain: "outil-analyse-credit.firebaseapp.com",
+    projectId: "outil-analyse-credit",
+    storageBucket: "outil-analyse-credit.firebasestorage.app",
+    messagingSenderId: "759327208997",
+    appId: "1:759327208997:web:8005610593f982ab53b1cc"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getFirestore(app);
+
+  // ================================================================
+  // COLLECTE DES DONNÉES DU FORMULAIRE
+  // ================================================================
+  function collecterDonnees() {
+    const data = {};
+    const ids = [
+      "raison_sociale","representant","cip","type_piece","localisation","anciennete",
+      "matrimonial","enfants","autres_charges_nb","experience","secteur","date_client",
+      "rang_credit","historique","objet_credit","montant_sollicite","montant_simule",
+      "duree","taux_mensuel","taux_commission","type_credit","nb_echeances",
+      "ca_veille","ca_j3","ca_jour","jours_mois",
+      "ca","cmv","services","loyer","impots","salaires","interets_paye","autres_charges_exp",
+      "depenses_menage","autres_revenus","petits_outils",
+      "stocks","creances","dispo","autres_actifs","dettes_fourn","dettes_fin","autres_dettes",
+      "garanties_reelles","valeur_garanties","fonds_garantie","autres_garanties",
+      "age_client","num_dossier","agence","date_comite","nom_charge",
+      "risque_1","mitigant_1","risque_2","mitigant_2","risque_3","mitigant_3","niveau_risque",
+      "contexte_demande","logique_economique","verification_chiffres",
+      "conditions_particulieres","conclusion_comite"
+    ];
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) data[id] = el.value;
+    });
+    data._produits = [];
+    document.querySelectorAll("#produits-list .dyn-row").forEach(row => {
+      const inp = row.querySelectorAll("input");
+      data._produits.push({ nom: inp[0]?.value||"", pa: inp[1]?.value||"", pv: inp[2]?.value||"" });
+    });
+    data._immos = [];
+    document.querySelectorAll("#immos-list .dyn-row").forEach(row => {
+      const inp = row.querySelectorAll("input");
+      data._immos.push({ nom: inp[0]?.value||"", prix: inp[1]?.value||"", duree: inp[2]?.value||"", age: inp[3]?.value||"" });
+    });
+    data._cautions = [];
+    document.querySelectorAll("#cautions-list .dyn-row").forEach(row => {
+      const inp = row.querySelectorAll("input");
+      data._cautions.push({ nom: inp[0]?.value||"", prof: inp[1]?.value||"", lieu: inp[2]?.value||"", revenu: inp[3]?.value||"", engage: inp[4]?.value||"" });
+    });
+    return data;
+  }
+
+  // ================================================================
+  // REMPLIR LE FORMULAIRE DEPUIS LES DONNÉES
+  // ================================================================
+  function remplirFormulaire(data) {
+    Object.keys(data).forEach(id => {
+      if (id.startsWith("_")) return;
+      const el = document.getElementById(id);
+      if (el) el.value = data[id];
+    });
+    document.getElementById("produits-list").innerHTML = "";
+    window.produits = [];
+    (data._produits || []).forEach(p => {
+      window.ajouterProduit();
+      const rows = document.querySelectorAll("#produits-list .dyn-row");
+      const inp = rows[rows.length - 1].querySelectorAll("input");
+      inp[0].value = p.nom || ""; inp[1].value = p.pa || ""; inp[2].value = p.pv || "";
+    });
+    document.getElementById("immos-list").innerHTML = "";
+    window.immos = [];
+    (data._immos || []).forEach(im => {
+      window.ajouterImmo();
+      const rows = document.querySelectorAll("#immos-list .dyn-row");
+      const inp = rows[rows.length - 1].querySelectorAll("input");
+      inp[0].value = im.nom || ""; inp[1].value = im.prix || "";
+      inp[2].value = im.duree || ""; inp[3].value = im.age || "";
+    });
+    document.getElementById("cautions-list").innerHTML = "";
+    window.cautions = [];
+    (data._cautions || []).forEach(c => {
+      window.ajouterCaution();
+      const rows = document.querySelectorAll("#cautions-list .dyn-row");
+      const inp = rows[rows.length - 1].querySelectorAll("input");
+      inp[0].value = c.nom || ""; inp[1].value = c.prof || ""; inp[2].value = c.lieu || "";
+      inp[3].value = c.revenu || ""; inp[4].value = c.engage || "";
+    });
+    if (window.onTypeCredit) window.onTypeCredit();
+    if (window.calcCAterrain) window.calcCAterrain();
+    if (window.calcProduits) window.calcProduits();
+    if (window.calcImmos) window.calcImmos();
+    if (window.calcBilan) window.calcBilan();
+    if (window.calcExploitation) window.calcExploitation();
+    if (window.calcGaranties) window.calcGaranties();
+    if (window.calcDemande) window.calcDemande();
+  }
+
+  // ================================================================
+  // SAUVEGARDE AUTO LOCALE (protection rechargement page)
+  // ================================================================
+  function sauvegardeLocale() {
+    try {
+      const data = collecterDonnees();
+      data._dossierId = window._dossierId || null;
+      localStorage.setItem("outil_credit_autosave", JSON.stringify(data));
+    } catch(e) { console.warn("Autosave local échoué:", e); }
+  }
+
+  function restaurerSauvegardeLocale() {
+    try {
+      const raw = localStorage.getItem("outil_credit_autosave");
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (data._dossierId) window._dossierId = data._dossierId;
+      delete data._dossierId;
+      remplirFormulaire(data);
+      const idEl = document.getElementById("dossier-id-display");
+      if (idEl && window._dossierId) idEl.textContent = "ID: " + window._dossierId;
+      console.log("Données restaurées depuis la sauvegarde locale");
+    } catch(e) { console.warn("Restauration locale échouée:", e); }
+  }
+
+  // Autosave toutes les 30 secondes + à chaque changement de champ
+  setInterval(sauvegardeLocale, 30000);
+  document.addEventListener("change", sauvegardeLocale);
+  document.addEventListener("input", sauvegardeLocale);
+
+  // Restaurer au chargement (après que le DOM soit prêt)
+  window.addEventListener("load", () => {
+    setTimeout(restaurerSauvegardeLocale, 500);
+  });
+
+  // ================================================================
+  // ENREGISTRER DANS FIREBASE
+  // ================================================================
+  window.enregistrerFirebase = async function() {
+    const btn = document.getElementById("btn-firebase-save");
+    const origText = btn.textContent;
+    btn.textContent = "Enregistrement...";
+    btn.disabled = true;
+    try {
+      const data = collecterDonnees();
+      const nomClient = (data.raison_sociale || "Sans nom").trim();
+      data._ts = new Date().toISOString();
+      sauvegardeLocale();
+
+      let dossierId = window._dossierId || null;
+
+      if (dossierId) {
+        const ref = doc(db, "dossiers", dossierId);
+        await updateDoc(ref, {
+          nom_client: nomClient,
+          date_modification: serverTimestamp(),
+          statut: "en_cours",
+          donnees: data
+        });
+        await addDoc(collection(db, "dossiers", dossierId, "historique"), {
+          date: serverTimestamp(),
+          donnees: data
+        });
+      } else {
+        const ref = await addDoc(collection(db, "dossiers"), {
+          nom_client: nomClient,
+          date_creation: serverTimestamp(),
+          date_modification: serverTimestamp(),
+          statut: "en_cours",
+          donnees: data
+        });
+        dossierId = ref.id;
+        window._dossierId = dossierId;
+        await addDoc(collection(db, "dossiers", dossierId, "historique"), {
+          date: serverTimestamp(),
+          donnees: data
+        });
+      }
+
+      const idEl = document.getElementById("dossier-id-display");
+      if (idEl) idEl.textContent = "ID: " + dossierId;
+
+      btn.textContent = "✓ Enregistré";
+      setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2500);
+      window._showNotif("Dossier enregistré dans Firebase ✓", "vert");
+    } catch(err) {
+      console.error(err);
+      btn.textContent = origText;
+      btn.disabled = false;
+      window._showNotif("Erreur Firebase : " + err.message, "rouge");
+    }
+  };
+
+  // ================================================================
+  // CHARGER LA LISTE DES DOSSIERS
+  // ================================================================
+  window.chargerListeDossiers = async function(filtre) {
+    filtre = filtre || "";
+    const liste = document.getElementById("firebase-liste");
+    liste.innerHTML = '<p style="color:var(--gris);font-size:0.82rem;padding:12px;">Chargement...</p>';
+    try {
+      const q = query(collection(db, "dossiers"), orderBy("date_modification", "desc"));
+      const snap = await getDocs(q);
+      if (snap.empty) {
+        liste.innerHTML = '<p style="color:var(--gris);font-size:0.82rem;padding:12px;">Aucun dossier enregistré.</p>';
+        return;
+      }
+      let html = "";
+      snap.forEach(d => {
+        const dat = d.data();
+        const nom = dat.nom_client || "Sans nom";
+        if (filtre && !nom.toLowerCase().includes(filtre.toLowerCase())) return;
+        const dateM = dat.date_modification?.toDate?.()?.toLocaleDateString("fr-FR") || "—";
+        const actif = window._dossierId === d.id;
+        const bg = actif ? "background:var(--bleu-clair);border-left:3px solid var(--bleu);" : "";
+        html += `<div style="display:flex;align-items:center;border-bottom:1px solid var(--gris-clair);${bg}transition:background .15s;">
+          <div onclick="window.ouvrirDossier('${d.id}')"
+            style="flex:1;padding:12px 16px;cursor:pointer;"
+            onmouseover="this.parentElement.style.background='var(--fond)'"
+            onmouseout="this.parentElement.style.background='${actif ? "var(--bleu-clair)" : "white"}'">
+            <div style="font-weight:700;font-size:0.88rem;color:var(--bleu);">${nom}</div>
+            <div style="font-size:0.75rem;color:var(--gris);margin-top:3px;">Modifié le ${dateM} · <span style="color:var(--or);">${dat.statut || "en_cours"}</span></div>
+          </div>
+          <button onclick="event.stopPropagation();window.supprimerDossier('${d.id}','${nom.replace(/'/g,"\'")}')"
+            title="Supprimer définitivement"
+            style="background:none;border:none;color:#c1121f;font-size:1.1rem;padding:12px 14px;cursor:pointer;opacity:0.6;transition:opacity .2s;"
+            onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">🗑</button>
+        </div>`;
+      });
+      liste.innerHTML = html || '<p style="color:var(--gris);font-size:0.82rem;padding:12px;">Aucun résultat.</p>';
+    } catch(err) {
+      liste.innerHTML = `<p style="color:var(--rouge);font-size:0.82rem;padding:12px;">Erreur : ${err.message}</p>`;
+    }
+  };
+
+  // ================================================================
+  // OUVRIR UN DOSSIER
+  // ================================================================
+  window.ouvrirDossier = async function(id) {
+    try {
+      const snap = await getDoc(doc(db, "dossiers", id));
+      if (!snap.exists()) { alert("Dossier introuvable."); return; }
+      const data = snap.data().donnees || {};
+      window._dossierId = id;
+      remplirFormulaire(data);
+      sauvegardeLocale();
+      window.fermerPanneauDossiers();
+      const idEl = document.getElementById("dossier-id-display");
+      if (idEl) idEl.textContent = "ID: " + id;
+      window._showNotif("Dossier chargé : " + (snap.data().nom_client || id), "vert");
+    } catch(err) {
+      alert("Erreur lors du chargement : " + err.message);
+    }
+  };
+
+  // ================================================================
+  // SUPPRIMER UN DOSSIER
+  // ================================================================
+  window.supprimerDossier = async function(id, nom) {
+    if (!confirm("Supprimer définitivement le dossier \n\"" + nom + "\"\n\nCette action est irréversible.")) return;
+    try {
+      // Supprimer toutes les versions de l'historique d'abord
+      const histSnap = await getDocs(collection(db, "dossiers", id, "historique"));
+      const suppressions = [];
+      histSnap.forEach(d => suppressions.push(deleteDoc(doc(db, "dossiers", id, "historique", d.id))));
+      await Promise.all(suppressions);
+      // Supprimer le dossier principal
+      await deleteDoc(doc(db, "dossiers", id));
+      // Si c'était le dossier ouvert, réinitialiser
+      if (window._dossierId === id) {
+        window._dossierId = null;
+        const idEl = document.getElementById("dossier-id-display");
+        if (idEl) idEl.textContent = "";
+        localStorage.removeItem("outil_credit_autosave");
+      }
+      window._showNotif("Dossier supprimé définitivement.", "rouge");
+      // Rafraîchir la liste
+      const filtre = document.getElementById("dossiers-search")?.value || "";
+      window.chargerListeDossiers(filtre);
+    } catch(err) {
+      alert("Erreur lors de la suppression : " + err.message);
+    }
+  };
+
+  // ================================================================
+  // VOIR HISTORIQUE
+  // ================================================================
+  window.voirHistorique = async function() {
+    const id = window._dossierId;
+    if (!id) { alert("Ouvre d'abord un dossier existant."); return; }
+    try {
+      const q = query(collection(db, "dossiers", id, "historique"), orderBy("date", "desc"));
+      const snap = await getDocs(q);
+      const panel = document.getElementById("historique-panel");
+      if (!panel) return;
+      let html = '<div style="font-weight:700;font-size:0.9rem;color:var(--bleu);margin-bottom:12px;">Historique des versions</div>';
+      if (snap.empty) {
+        html += '<p style="color:var(--gris);font-size:0.82rem;">Aucune version enregistrée.</p>';
+      }
+      snap.forEach(d => {
+        const date = d.data().date?.toDate?.()?.toLocaleString("fr-FR") || "—";
+        html += `<div style="padding:10px 14px;border-bottom:1px solid var(--gris-clair);cursor:pointer;font-size:0.84rem;"
+          onclick="window.restaurerVersion('${id}','${d.id}')"
+          onmouseover="this.style.background='var(--fond)'"
+          onmouseout="this.style.background='white'">
+          <span style="font-weight:600;">Version du ${date}</span>
+          <span style="color:var(--or);font-size:0.75rem;margin-left:8px;">↩ Restaurer</span>
+        </div>`;
+      });
+      panel.innerHTML = html;
+      document.getElementById("historique-overlay").style.display = "flex";
+    } catch(err) { alert("Erreur historique : " + err.message); }
+  };
+
+  // ================================================================
+  // RESTAURER UNE VERSION
+  // ================================================================
+  window.restaurerVersion = async function(dossierId, versionId) {
+    if (!confirm("Restaurer cette version ? Les données non enregistrées seront perdues.")) return;
+    try {
+      const snap = await getDoc(doc(db, "dossiers", dossierId, "historique", versionId));
+      if (!snap.exists()) { alert("Version introuvable."); return; }
+      remplirFormulaire(snap.data().donnees || {});
+      window._dossierId = dossierId;
+      sauvegardeLocale();
+      document.getElementById("historique-overlay").style.display = "none";
+      window._showNotif("Version restaurée ✓", "vert");
+    } catch(err) { alert("Erreur restauration : " + err.message); }
+  };
+
+  console.log("Firebase initialisé ✓");
+</script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600&display=swap');
+  :root {
+    --noir:#0d0d0d; --fond:#f5f2ed; --blanc:#ffffff; --or:#c9a84c; --or-clair:#f0e0a8;
+    --vert:#2d6a4f; --vert-clair:#d8f3dc; --rouge:#c1121f; --rouge-clair:#ffe0e0;
+    --gris:#6b6b6b; --gris-clair:#e8e4de; --bleu:#1d3557; --bleu-clair:#e0e8f4;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'DM Sans',sans-serif;background:var(--fond);color:var(--noir);min-height:100vh;}
+
+  header{background:var(--noir);padding:18px 40px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 2px 20px rgba(0,0,0,0.3);}
+  header h1{font-family:'Playfair Display',serif;color:var(--or);font-size:1.3rem;}
+  header span{color:#888;font-size:0.78rem;}
+
+  .tabs{display:flex;background:var(--blanc);border-bottom:2px solid var(--gris-clair);padding:0 40px;overflow-x:auto;gap:4px;}
+  .tab-btn{padding:13px 18px;border:none;background:none;font-family:'DM Sans',sans-serif;font-size:0.8rem;font-weight:500;color:var(--gris);cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;white-space:nowrap;transition:all .2s;}
+  .tab-btn:hover{color:var(--noir);}
+  .tab-btn.active{color:var(--or);border-bottom-color:var(--or);font-weight:700;}
+
+  .tab-content{display:none;padding:28px 40px;max-width:1150px;margin:0 auto;}
+  .tab-content.active{display:block;}
+
+  .section{background:var(--blanc);border-radius:12px;padding:24px;margin-bottom:20px;border:1px solid var(--gris-clair);}
+  .section-title{font-family:'Playfair Display',serif;font-size:1rem;color:var(--bleu);margin-bottom:18px;padding-bottom:10px;border-bottom:2px solid var(--or-clair);display:flex;align-items:center;gap:10px;}
+  .sub-title{font-size:0.85rem;font-weight:700;color:var(--bleu);margin:16px 0 10px;text-transform:uppercase;letter-spacing:.5px;}
+
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;}
+  .grid-4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:14px;}
+  .grid-5{display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:12px;}
+
+  .field{display:flex;flex-direction:column;gap:5px;}
+  .field label{font-size:0.75rem;font-weight:700;color:var(--gris);text-transform:uppercase;letter-spacing:.4px;}
+  .field input,.field select{padding:9px 12px;border:1.5px solid var(--gris-clair);border-radius:8px;font-family:'DM Sans',sans-serif;font-size:0.88rem;color:var(--noir);background:var(--fond);transition:border-color .2s;outline:none;}
+  .field input:focus,.field select:focus{border-color:var(--or);background:var(--blanc);}
+  .field input.calc{background:var(--bleu-clair);border-color:var(--bleu);color:var(--bleu);font-weight:700;cursor:default;}
+  .field input.positif{background:var(--vert-clair);border-color:var(--vert);color:var(--vert);font-weight:700;}
+  .field input.negatif{background:var(--rouge-clair);border-color:var(--rouge);color:var(--rouge);font-weight:700;}
+  .field input.attention{background:#fff8e1;border-color:#f4a261;color:#e76f00;font-weight:700;}
+  .full-width{grid-column:1/-1;}
+
+  .btn{padding:10px 24px;border:none;border-radius:8px;font-family:'DM Sans',sans-serif;font-weight:700;font-size:0.85rem;cursor:pointer;transition:all .2s;}
+  .btn-primary{background:var(--noir);color:var(--or);}
+  .btn-primary:hover{background:var(--bleu);}
+  .btn-success{background:var(--vert);color:#fff;}
+  .btn-success:hover{opacity:.85;}
+  .btn-danger{background:var(--rouge);color:#fff;padding:6px 14px;font-size:0.78rem;}
+  .btn-add{background:var(--or-clair);color:#7a5c00;border:1.5px solid var(--or);padding:8px 18px;font-size:0.82rem;}
+  .btn-add:hover{background:var(--or);color:var(--noir);}
+  .btn-outline{background:transparent;border:2px solid var(--gris-clair);color:var(--gris);}
+  .btn-outline:hover{border-color:var(--noir);color:var(--noir);}
+  .btn-group{display:flex;gap:10px;margin-top:18px;flex-wrap:wrap;}
+
+  /* LIGNE DE TABLEAU DYNAMIQUE */
+  .dyn-row{display:grid;gap:10px;align-items:end;margin-bottom:10px;background:var(--fond);border-radius:8px;padding:12px;}
+  .dyn-row .field label{font-size:0.72rem;}
+  .dyn-row .field input{font-size:0.85rem;padding:8px 10px;}
+
+  table{width:100%;border-collapse:collapse;font-size:0.84rem;}
+  thead tr{background:var(--noir);color:var(--or);}
+  thead th{padding:11px 13px;text-align:right;font-weight:600;font-size:0.76rem;letter-spacing:.4px;}
+  thead th:first-child{text-align:left;}
+  tbody tr{border-bottom:1px solid var(--gris-clair);}
+  tbody tr:hover{background:var(--fond);}
+  tbody td{padding:9px 13px;text-align:right;}
+  tbody td:first-child{text-align:left;}
+  tfoot tr{background:var(--bleu-clair);font-weight:700;}
+  tfoot td{padding:11px 13px;text-align:right;color:var(--bleu);}
+  tfoot td:first-child{text-align:left;}
+  .table-wrap{overflow-x:auto;margin-top:16px;}
+
+  .resultats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;margin-bottom:20px;}
+  .kpi-card{background:var(--blanc);border-radius:10px;padding:16px 18px;border:1px solid var(--gris-clair);border-left:4px solid var(--or);}
+  .kpi-card.vert{border-left-color:var(--vert);}
+  .kpi-card.rouge{border-left-color:var(--rouge);}
+  .kpi-card.bleu{border-left-color:var(--bleu);}
+  .kpi-label{font-size:0.7rem;font-weight:700;color:var(--gris);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;}
+  .kpi-value{font-family:'Playfair Display',serif;font-size:1.15rem;color:var(--noir);}
+  .kpi-sub{font-size:0.72rem;color:var(--gris);margin-top:3px;}
+
+  .synthese-bloc{background:var(--noir);color:var(--blanc);border-radius:12px;padding:24px;margin-top:14px;}
+  .synthese-bloc h3{font-family:'Playfair Display',serif;color:var(--or);margin-bottom:14px;font-size:1.05rem;}
+  .synthese-ligne{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #2a2a2a;font-size:0.86rem;}
+  .synthese-ligne:last-child{border-bottom:none;}
+  .synthese-ligne .label{color:#aaa;}
+  .synthese-ligne .val{font-weight:700;}
+  .synthese-ligne .val.ok{color:#74c69d;}
+  .synthese-ligne .val.warn{color:#f4a261;}
+  .synthese-ligne .val.ko{color:#e63946;}
+  .avis-box{border-radius:10px;padding:18px 22px;margin-top:18px;font-size:0.88rem;line-height:1.7;font-weight:500;}
+  .avis-box.favorable{background:var(--vert-clair);border-left:4px solid var(--vert);color:var(--vert);}
+  .avis-box.reserve{background:#fff8e1;border-left:4px solid #f4a261;color:#7a4f00;}
+  .avis-box.defavorable{background:var(--rouge-clair);border-left:4px solid var(--rouge);color:var(--rouge);}
+
+  .info-box{background:var(--bleu-clair);border-left:4px solid var(--bleu);border-radius:8px;padding:12px 16px;font-size:0.82rem;color:var(--bleu);margin-bottom:16px;}
+  .separator{height:1px;background:var(--gris-clair);margin:18px 0;}
+  .note{font-size:0.76rem;color:var(--gris);font-style:italic;margin-top:6px;}
+
+  /* PANNEAU LATÉRAL DOSSIERS */
+  #dossiers-overlay {
+    display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+    background:rgba(0,0,0,0.5); z-index:1000; justify-content:flex-end;
+  }
+  #dossiers-panel {
+    width:360px; height:100%; background:var(--blanc);
+    display:flex; flex-direction:column; box-shadow:-4px 0 20px rgba(0,0,0,0.2);
+    animation: slideIn .25s ease;
+  }
+  @keyframes slideIn { from{transform:translateX(100%)} to{transform:translateX(0)} }
+  #dossiers-panel-header {
+    background:var(--noir); padding:18px 20px;
+    display:flex; align-items:center; justify-content:space-between;
+  }
+  #dossiers-panel-header h2 { color:var(--or); font-family:'Playfair Display',serif; font-size:1rem; }
+  #dossiers-search {
+    padding:10px 16px; border:none; border-bottom:1px solid var(--gris-clair);
+    font-family:'DM Sans',sans-serif; font-size:0.88rem; outline:none; width:100%;
+  }
+  #firebase-liste { flex:1; overflow-y:auto; }
+
+  /* OVERLAY HISTORIQUE */
+  #historique-overlay {
+    display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+    background:rgba(0,0,0,0.5); z-index:1100; align-items:center; justify-content:center;
+  }
+  #historique-box {
+    background:var(--blanc); border-radius:12px; width:420px; max-height:70vh;
+    overflow-y:auto; box-shadow:0 8px 32px rgba(0,0,0,0.3);
+  }
+  #historique-box-header {
+    background:var(--noir); padding:16px 20px; border-radius:12px 12px 0 0;
+    display:flex; align-items:center; justify-content:space-between;
+  }
+  #historique-box-header span { color:var(--or); font-family:'Playfair Display',serif; font-size:0.95rem; }
+  #historique-panel { padding:0; }
+
+  /* NOTIF */
+  #notif-bar {
+    display:none; position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+    padding:10px 24px; border-radius:30px; font-size:0.85rem; font-weight:600;
+    z-index:2000; box-shadow:0 4px 16px rgba(0,0,0,0.2); font-family:'DM Sans',sans-serif;
+  }
+
+  @media(max-width:768px){
+    .tabs{padding:0 12px;} .tab-content{padding:16px 12px;} .section{padding:16px;}
+    .grid-2,.grid-3,.grid-4,.grid-5{grid-template-columns:1fr;} header{padding:14px 16px;}
+    .dyn-row{grid-template-columns:1fr!important;}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚖ Outil Analyse Crédit — Microfinance</h1>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    <span id="date-header" style="color:#888;font-size:0.75rem;margin-right:4px;"></span>
+    <span id="dossier-id-display" style="color:var(--or);font-size:0.7rem;font-style:italic;"></span>
+    <button id="btn-firebase-save" class="btn" onclick="window.enregistrerFirebase()" style="background:#2d6a4f;color:#fff;padding:8px 14px;font-size:0.78rem;">💾 Enregistrer</button>
+    <button class="btn" onclick="window.ouvrirPanneauDossiers()" style="background:#1d3557;color:#fff;padding:8px 14px;font-size:0.78rem;">📂 Mes dossiers</button>
+    <button class="btn" onclick="window.nouveauDossier()" style="background:#c9a84c;color:#0d0d0d;padding:8px 14px;font-size:0.78rem;">＋ Nouveau</button>
+    <button class="btn" onclick="window.voirHistorique()" style="background:#444;color:#fff;padding:8px 14px;font-size:0.78rem;">🕐 Historique</button>
+  </div>
+</header>
+
+<div class="tabs">
+  <button class="tab-btn active" onclick="showTab('identification',this)">① Identification</button>
+  <button class="tab-btn" onclick="showTab('demande',this)">② Demande</button>
+  <button class="tab-btn" onclick="showTab('ca_terrain',this)">③ CA Terrain</button>
+  <button class="tab-btn" onclick="showTab('produits',this)">④ Produits & Marges</button>
+  <button class="tab-btn" onclick="showTab('exploitation',this)">⑤ Exploitation</button>
+  <button class="tab-btn" onclick="showTab('immobilisations',this)">⑥ Immobilisations</button>
+  <button class="tab-btn" onclick="showTab('bilan',this)">⑦ Bilan</button>
+  <button class="tab-btn" onclick="showTab('garanties',this)">⑧ Garanties</button>
+  <button class="tab-btn" onclick="showTab('amortissement',this)">⑨ Amortissement</button>
+  <button class="tab-btn" onclick="showTab('analyse',this)">⑩ Analyse & Ratios</button>
+  <button class="tab-btn" onclick="showTab('synthese',this)">⑪ Synthèse</button>
+  <button class="tab-btn" onclick="showTab('comite',this)" style="color:var(--or);font-weight:700;">⑫ Comité</button>
+</div>
+
+<!-- ① IDENTIFICATION -->
+<div id="tab-identification" class="tab-content active">
+  <div class="section">
+    <div class="section-title">👤 Identification de l'emprunteur</div>
+    <div class="grid-2">
+      <div class="field"><label>Raison sociale / Nom</label><input type="text" id="raison_sociale" placeholder="ETS / Nom complet"></div>
+      <div class="field"><label>Représentant légal</label><input type="text" id="representant"></div>
+      <div class="field"><label>N° pièce d'identité</label><input type="text" id="cip"></div>
+      <div class="field"><label>Type de pièce</label><select id="type_piece"><option>CIP</option><option>CNI</option><option>Passeport</option><option>Autre</option></select></div>
+      <div class="field"><label>Localisation / Quartier</label><input type="text" id="localisation"></div>
+      <div class="field"><label>Ancienneté sur place (années)</label><input type="number" id="anciennete" placeholder="0"></div>
+      <div class="field"><label>Situation matrimoniale</label><select id="matrimonial"><option>Marié(e)</option><option>Célibataire</option><option>Divorcé(e)</option><option>Veuf/Veuve</option></select></div>
+      <div class="field"><label>Âge du client (ans)</label><input type="number" id="age_client" placeholder="0"></div>
+      <div class="field"><label>Enfants à charge</label><input type="number" id="enfants" placeholder="0"></div>
+      <div class="field"><label>Autres personnes à charge</label><input type="number" id="autres_charges_nb" placeholder="0"></div>
+      <div class="field"><label>Expérience professionnelle (ans)</label><input type="number" id="experience" placeholder="0"></div>
+      <div class="field"><label>Secteur d'activité</label>
+        <select id="secteur"><option>Commerce général</option><option>Commerce alimentaire</option><option>Commerce frontalier</option><option>Agriculture</option><option>Élevage</option><option>Artisanat</option><option>Services</option><option>BTP</option><option>Transformation</option><option>Autre</option></select>
+      </div>
+      <div class="field"><label>Date 1er crédit (ancienneté client)</label><input type="date" id="date_client"></div>
+      <div class="field"><label>Rang du crédit (cycle)</label><input type="number" id="rang_credit" placeholder="ex: 3"></div>
+      <div class="field"><label>Historique de remboursement</label>
+        <select id="historique"><option>Excellent — aucun retard</option><option>Bon — retards mineurs</option><option>Moyen — retards fréquents</option><option>Mauvais — incidents majeurs</option></select>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ② DEMANDE -->
+<div id="tab-demande" class="tab-content">
+  <div class="section">
+    <div class="section-title">📋 Caractéristiques de la demande</div>
+    <div class="grid-2">
+      <div class="field full-width"><label>Objet du crédit</label><input type="text" id="objet_credit" placeholder="Achat marchandises, équipement..."></div>
+      <div class="field"><label>Montant sollicité (FCFA)</label><input type="number" id="montant_sollicite" placeholder="0" oninput="calcDemande()"></div>
+      <div class="field"><label>Montant simulé / base d'analyse (FCFA)</label><input type="number" id="montant_simule" placeholder="0" oninput="calcDemande()"></div>
+      <div class="field"><label>Durée (mois)</label><input type="number" id="duree" placeholder="12" oninput="calcDemande()"></div>
+      <div class="field"><label>Taux d'intérêt mensuel (%)</label>
+        <input type="number" id="taux_mensuel" value="1.8" step="0.01" oninput="calcDemande()">
+      </div>
+      <div class="field"><label>Commission par échéance (%)</label>
+        <input type="number" id="taux_commission" value="1.9" step="0.01" oninput="calcDemande()">
+      </div>
+      <div class="field"><label>Type de crédit</label>
+        <select id="type_credit" onchange="onTypeCredit()">
+          <option value="mensuel">Mensuel (dégressif quasi constant)</option>
+          <option value="bimestriel">Bimestriel (tous les 2 mois)</option>
+          <option value="trimestriel">Trimestriel (tous les 3 mois)</option>
+          <option value="semestriel">Semestriel (tous les 6 mois)</option>
+          <option value="terme">Crédit à terme (remboursement unique)</option>
+        </select>
+      </div>
+      <div class="field" id="field_nb_echeances" style="display:none;">
+        <label>Nombre d'échéances</label>
+        <input type="number" id="nb_echeances" placeholder="ex: 4" oninput="calcDemande()">
+      </div>
+    </div>
+    <div class="separator"></div>
+    <div class="grid-4">
+      <div class="field"><label>Échéance de base (FCFA)</label><input type="text" id="echeance_base" class="calc" readonly></div>
+      <div class="field"><label>Commission / échéance (FCFA)</label><input type="text" id="commission_echeance" class="calc" readonly></div>
+      <div class="field"><label>Échéance totale client (FCFA)</label><input type="text" id="echeance_calc" class="calc positif" readonly></div>
+      <div class="field"><label>Nb échéances</label><input type="text" id="nb_ech_calc" class="calc" readonly></div>
+      <div class="field"><label>Total intérêts (FCFA)</label><input type="text" id="total_interets" class="calc" readonly></div>
+      <div class="field"><label>Total commissions (FCFA)</label><input type="text" id="total_commissions" class="calc" readonly></div>
+      <div class="field"><label>Coût total du crédit (FCFA)</label><input type="text" id="cout_total" class="calc" readonly></div>
+    </div>
+    <div class="info-box" id="info_type_credit" style="margin-top:14px;display:none;"></div>
+  </div>
+</div>
+
+<!-- ③ CA TERRAIN -->
+<div id="tab-ca_terrain" class="tab-content">
+  <div class="section">
+    <div class="section-title">📅 Relevé du chiffre d'affaires terrain</div>
+    <div class="info-box">Le CA moyen des 3 jours relevés est divisé par les jours ouvrés relevés, puis multiplié par le nombre de jours travaillés dans le mois pour obtenir le CA mensuel réel de l'activité.</div>
+    <div class="grid-3">
+      <div class="field"><label>CA la veille de l'entretien (FCFA)</label><input type="number" id="ca_veille" placeholder="0" oninput="calcCAterrain()"></div>
+      <div class="field"><label>CA il y a 3 jours (FCFA)</label><input type="number" id="ca_j3" placeholder="0" oninput="calcCAterrain()"></div>
+      <div class="field"><label>CA le jour de l'entretien (FCFA)</label><input type="number" id="ca_jour" placeholder="0" oninput="calcCAterrain()"></div>
+    </div>
+    <div class="separator"></div>
+    <div class="grid-4">
+      <div class="field"><label>CA moyen journalier (FCFA)</label><input type="text" id="ca_moy_jour" class="calc" readonly></div>
+      <div class="field"><label>Jours travaillés dans le mois</label><input type="number" id="jours_mois" placeholder="ex: 25" oninput="calcCAterrain()"></div>
+      <div class="field"><label>CA mensuel calculé (FCFA)</label><input type="text" id="ca_mensuel_calc" class="calc positif" readonly></div>
+      <div class="field"><label>CA annuel estimé (FCFA)</label><input type="text" id="ca_annuel_calc" class="calc" readonly></div>
+    </div>
+    <p class="note">Ce CA mensuel calculé est automatiquement reporté dans l'onglet Exploitation.</p>
+  </div>
+</div>
+
+<!-- ④ PRODUITS & MARGES -->
+<div id="tab-produits" class="tab-content">
+  <div class="section">
+    <div class="section-title">🛒 Produits vendus — Calcul du taux de marge global</div>
+    <div class="info-box">Renseigne chaque produit vendu avec son prix d'achat et son prix de vente. Le taux de marge moyen pondéré est calculé et appliqué automatiquement au CA pour obtenir le CMV.</div>
+    <div id="produits-list"></div>
+    <div class="btn-group" style="margin-top:14px;">
+      <button class="btn btn-add" onclick="ajouterProduit()">+ Ajouter un produit</button>
+      <button class="btn btn-primary" onclick="calcProduits()">Calculer le taux de marge</button>
+    </div>
+    <div class="separator"></div>
+    <div class="grid-4">
+      <div class="field"><label>Taux de marge moyen pondéré (%)</label><input type="text" id="taux_marge_global" class="calc" readonly></div>
+      <div class="field"><label>CA mensuel (repris de l'onglet CA)</label><input type="text" id="ca_repris" class="calc" readonly></div>
+      <div class="field"><label>Marge brute calculée (FCFA)</label><input type="text" id="mb_produits" class="calc positif" readonly></div>
+      <div class="field"><label>CMV calculé (FCFA)</label><input type="text" id="cmv_produits" class="calc" readonly></div>
+    </div>
+    <p class="note">Ces valeurs sont automatiquement reportées dans l'onglet Exploitation.</p>
+  </div>
+</div>
+
+<!-- ⑤ EXPLOITATION -->
+<div id="tab-exploitation" class="tab-content">
+  <div class="section">
+    <div class="section-title">📊 Compte d'exploitation mensuel</div>
+    <div class="info-box">Le CA et le CMV sont repris automatiquement des onglets CA Terrain et Produits & Marges. Tu peux aussi les saisir manuellement.</div>
+    <div class="grid-3">
+      <div class="field"><label>Chiffre d'affaires mensuel (FCFA)</label><input type="number" id="ca" placeholder="0" oninput="calcExploitation()"></div>
+      <div class="field"><label>Coût des marchandises vendues (FCFA)</label><input type="number" id="cmv" placeholder="0" oninput="calcExploitation()"></div>
+      <div class="field"><label>Marge brute (FCFA)</label><input type="text" id="mb_calc" class="calc" readonly></div>
+      <div class="field"><label>Taux de marge brute (%)</label><input type="text" id="taux_mb" class="calc" readonly></div>
+    </div>
+    <div class="separator"></div>
+    <div class="sub-title">Charges d'exploitation mensuelles</div>
+    <div class="grid-3">
+      <div class="field"><label>Services consommés (FCFA)</label><input type="number" id="services" placeholder="transport, comm..." oninput="calcExploitation()"></div>
+      <div class="field"><label>Loyer (FCFA)</label><input type="number" id="loyer" placeholder="0" oninput="calcExploitation()"></div>
+      <div class="field"><label>Impôts & taxes (FCFA)</label><input type="number" id="impots" placeholder="0" oninput="calcExploitation()"></div>
+      <div class="field"><label>Main d'œuvre / Salaires (FCFA)</label><input type="number" id="salaires" placeholder="0" oninput="calcExploitation()"></div>
+      <div class="field"><label>Dotation amortissement mensuelle (FCFA)</label><input type="text" id="amort_mensuel_expl" class="calc" readonly></div>
+      <div class="field"><label>Dépenses financières / Intérêts (FCFA)</label><input type="number" id="interets_paye" placeholder="0" oninput="calcExploitation()"></div>
+      <div class="field"><label>Autres charges (FCFA)</label><input type="number" id="autres_charges_exp" placeholder="0" oninput="calcExploitation()"></div>
+    </div>
+    <div class="separator"></div>
+    <div class="grid-3">
+      <div class="field"><label>Total charges (FCFA)</label><input type="text" id="total_cf" class="calc" readonly></div>
+      <div class="field"><label>Résultat d'exploitation (FCFA)</label><input type="text" id="resultat_expl" class="calc" readonly></div>
+      <div class="field"><label>END mensuel (FCFA)</label><input type="text" id="end" class="calc" readonly></div>
+    </div>
+    <div class="separator"></div>
+    <div class="sub-title">Dépenses du ménage</div>
+    <div class="grid-3">
+      <div class="field"><label>Dépenses ménage mensuelles (FCFA)</label><input type="number" id="depenses_menage" placeholder="0" oninput="calcExploitation()"></div>
+      <div class="field"><label>Autres revenus du ménage (FCFA)</label><input type="number" id="autres_revenus" placeholder="0" oninput="calcExploitation()"></div>
+      <div class="field"><label>Solde disponible net ménage (FCFA)</label><input type="text" id="solde_menage" class="calc" readonly></div>
+    </div>
+  </div>
+</div>
+
+<!-- ⑥ IMMOBILISATIONS -->
+<div id="tab-immobilisations" class="tab-content">
+  <div class="section">
+    <div class="section-title">🔧 Immobilisations & Amortissements</div>
+    <div class="info-box">Renseigne chaque équipement avec son prix d'acquisition, sa durée de vie (en années) et son ancienneté (en années déjà écoulées). La valeur nette comptable et la dotation mensuelle sont calculées automatiquement.</div>
+    <div id="immos-list"></div>
+    <div class="btn-group" style="margin-top:14px;">
+      <button class="btn btn-add" onclick="ajouterImmo()">+ Ajouter un équipement</button>
+    </div>
+    <div class="separator"></div>
+    <div class="sub-title">Petits outils sans équipement majeur</div>
+    <div class="grid-2">
+      <div class="field"><label>Valeur estimative petits outils (FCFA)</label><input type="number" id="petits_outils" placeholder="0" oninput="calcImmos()"></div>
+      <div class="note" style="margin-top:8px;">Si aucun équipement majeur, renseigne ici une valeur forfaitaire.</div>
+    </div>
+    <div class="separator"></div>
+    <div class="grid-4">
+      <div class="field"><label>Total valeur brute (FCFA)</label><input type="text" id="immo_brut_total" class="calc" readonly></div>
+      <div class="field"><label>Total amortissements cumulés (FCFA)</label><input type="text" id="immo_amort_cumul" class="calc" readonly></div>
+      <div class="field"><label>Valeur nette comptable — VNC (FCFA)</label><input type="text" id="immo_vnc" class="calc positif" readonly></div>
+      <div class="field"><label>Dotation mensuelle totale (FCFA)</label><input type="text" id="immo_dot_mensuelle" class="calc" readonly></div>
+    </div>
+    <p class="note">La VNC est reportée dans le Bilan. La dotation mensuelle est reportée dans l'Exploitation.</p>
+  </div>
+</div>
+
+<!-- ⑦ BILAN -->
+<div id="tab-bilan" class="tab-content">
+  <div class="section">
+    <div class="section-title">⚖ Bilan simplifié</div>
+    <div class="grid-2">
+      <div>
+        <div class="sub-title" style="color:var(--vert)">ACTIF</div>
+        <div class="grid-2">
+          <div class="field"><label>Stocks (FCFA)</label><input type="number" id="stocks" placeholder="0" oninput="calcBilan()"></div>
+          <div class="field"><label>Créances clients (FCFA)</label><input type="number" id="creances" placeholder="0" oninput="calcBilan()"></div>
+          <div class="field"><label>Immobilisations nettes — VNC (FCFA)</label><input type="text" id="immos_bilan" class="calc" readonly></div>
+          <div class="field"><label>Disponibilités Caisse/Banque (FCFA)</label><input type="number" id="dispo" placeholder="0" oninput="calcBilan()"></div>
+          <div class="field"><label>Autres actifs (FCFA)</label><input type="number" id="autres_actifs" placeholder="0" oninput="calcBilan()"></div>
+          <div class="field"><label>TOTAL ACTIF (FCFA)</label><input type="text" id="total_actif" class="calc" readonly></div>
+        </div>
+      </div>
+      <div>
+        <div class="sub-title" style="color:var(--rouge)">PASSIF</div>
+        <div class="grid-2">
+          <div class="field"><label>Dettes fournisseurs (FCFA)</label><input type="number" id="dettes_fourn" placeholder="0" oninput="calcBilan()"></div>
+          <div class="field"><label>Dettes financières en cours (FCFA)</label><input type="number" id="dettes_fin" placeholder="0" oninput="calcBilan()"></div>
+          <div class="field"><label>Autres dettes court terme (FCFA)</label><input type="number" id="autres_dettes" placeholder="0" oninput="calcBilan()"></div>
+          <div class="field"><label>Total dettes (FCFA)</label><input type="text" id="total_dettes" class="calc" readonly></div>
+          <div class="field"><label>Fonds propres (FCFA)</label><input type="text" id="fonds_propres" class="calc positif" readonly></div>
+          <div class="field"><label>TOTAL PASSIF (FCFA)</label><input type="text" id="total_passif" class="calc" readonly></div>
+        </div>
+      </div>
+    </div>
+    <div class="separator"></div>
+    <div class="grid-4">
+      <div class="field"><label>Fonds de Roulement — FR (FCFA)</label><input type="text" id="fr" class="calc" readonly></div>
+      <div class="field"><label>Besoin en FR — BFR (FCFA)</label><input type="text" id="bfr" class="calc" readonly></div>
+      <div class="field"><label>Trésorerie Nette — TN (FCFA)</label><input type="text" id="tn" class="calc" readonly></div>
+      <div class="field"><label>Autonomie financière (%)</label><input type="text" id="autonomie" class="calc" readonly></div>
+    </div>
+  </div>
+</div>
+
+<!-- ⑧ GARANTIES -->
+<div id="tab-garanties" class="tab-content">
+  <div class="section">
+    <div class="section-title">🛡 Cautions solidaires</div>
+    <div id="cautions-list"></div>
+    <div class="btn-group" style="margin-top:14px;">
+      <button class="btn btn-add" onclick="ajouterCaution()">+ Ajouter une caution</button>
+    </div>
+    <div class="separator"></div>
+    <div class="grid-4">
+      <div class="field"><label>Total engagement cautions / mois (FCFA)</label><input type="text" id="total_engage_cautions" class="calc" readonly></div>
+      <div class="field"><label>Couverture cautions / échéance (%)</label><input type="text" id="couv_cautions" class="calc" readonly></div>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-title">🔒 Autres garanties</div>
+    <div class="grid-2">
+      <div class="field"><label>Garanties réelles (description)</label><input type="text" id="garanties_reelles" placeholder="Titre foncier, nantissement..."></div>
+      <div class="field"><label>Valeur estimée (FCFA)</label><input type="number" id="valeur_garanties" placeholder="0"></div>
+      <div class="field"><label>Fonds de garantie (FCFA)</label><input type="number" id="fonds_garantie" placeholder="0"></div>
+      <div class="field"><label>Autres sûretés</label><input type="text" id="autres_garanties" placeholder="Domiciliation, épargne bloquée..."></div>
+    </div>
+  </div>
+</div>
+
+<!-- ⑨ AMORTISSEMENT -->
+<div id="tab-amortissement" class="tab-content">
+  <div class="section">
+    <div class="section-title">📅 Tableau d'amortissement du crédit</div>
+    <div class="btn-group" style="margin-top:0;margin-bottom:16px;">
+      <button class="btn btn-primary" onclick="genererAmortissement()">Générer le tableau</button>
+      <button class="btn btn-outline" onclick="window.print()">Imprimer</button>
+    </div>
+    <div class="table-wrap" id="tableau-amort"><p style="color:var(--gris);font-style:italic;font-size:0.86rem;">Renseigne l'onglet Demande puis génère.</p></div>
+  </div>
+</div>
+
+<!-- ⑩ ANALYSE -->
+<div id="tab-analyse" class="tab-content">
+  <div class="section">
+    <div class="section-title">📐 Ratios & Indicateurs financiers</div>
+    <div class="btn-group" style="margin-top:0;margin-bottom:16px;">
+      <button class="btn btn-primary" onclick="calcAnalyse()">Calculer tous les ratios</button>
+    </div>
+    <div class="resultats-grid" id="ratios-grid"><p style="color:var(--gris);font-style:italic;font-size:0.86rem;">Renseigne les onglets précédents puis calcule.</p></div>
+  </div>
+</div>
+
+<!-- ⑪ SYNTHÈSE -->
+<div id="tab-synthese" class="tab-content">
+  <div class="section">
+    <div class="section-title">📝 Fiche de synthèse</div>
+    <div class="btn-group" style="margin-top:0;margin-bottom:16px;">
+      <button class="btn btn-primary" onclick="genererSynthese()">Générer la synthèse</button>
+      <button class="btn btn-success" onclick="exporterWord()" id="btn-word">⬇ Télécharger Word (.docx)</button>
+    </div>
+    <div id="synthese-content"><p style="color:var(--gris);font-style:italic;font-size:0.86rem;">Renseigne tous les onglets puis génère.</p></div>
+  </div>
+</div>
+
+<!-- ⑫ COMITÉ -->
+<div id="tab-comite" class="tab-content">
+  <div class="section">
+    <div class="section-title">🎙 Informations pour la présentation au Comité</div>
+    <div class="info-box">Ces champs narratifs complètent les données financières pour permettre la rédaction automatique de la présentation au comité de crédit.</div>
+
+    <div class="sub-title">Section 2 — Contexte de la demande</div>
+    <div class="field" style="margin-bottom:16px;">
+      <label>Pourquoi le client vient-il maintenant ? Quelle situation ou opportunité motive la demande ?</label>
+      <textarea id="contexte_demande" rows="4" placeholder="Ex : rupture de trésorerie suite à une commande groupée avancée cash, opportunité d'achat en gros à prix réduit, renouvellement de stock après une saison difficile..." style="width:100%;padding:10px 14px;border:1.5px solid var(--gris-clair);border-radius:8px;font-family:'DM Sans',sans-serif;font-size:0.88rem;resize:vertical;background:var(--fond);outline:none;"></textarea>
+    </div>
+
+    <div class="sub-title">Section 3 — Logique économique</div>
+    <div class="field" style="margin-bottom:16px;">
+      <label>Décrire le modèle d'activité : où s'approvisionne-t-il, à qui vend-il, quel est son cycle d'exploitation ?</label>
+      <textarea id="logique_economique" rows="4" placeholder="Ex : achète en gros à Cotonou, revend au détail et en demi-gros sur le marché de Tchaourou. Cycle de 15 à 20 jours entre achat et revente. Clientèle fidèle de revendeurs locaux..." style="width:100%;padding:10px 14px;border:1.5px solid var(--gris-clair);border-radius:8px;font-family:'DM Sans',sans-serif;font-size:0.88rem;resize:vertical;background:var(--fond);outline:none;"></textarea>
+    </div>
+
+    <div class="sub-title">Section 4 — Vérification des chiffres</div>
+    <div class="field" style="margin-bottom:16px;">
+      <label>Comment les chiffres déclarés ont-ils été vérifiés ?</label>
+      <textarea id="verification_chiffres" rows="3" placeholder="Ex : vérification sur factures fournisseurs, relevés de caisse, observation terrain du flux clients, recoupement avec les relevés bancaires..." style="width:100%;padding:10px 14px;border:1.5px solid var(--gris-clair);border-radius:8px;font-family:'DM Sans',sans-serif;font-size:0.88rem;resize:vertical;background:var(--fond);outline:none;"></textarea>
+    </div>
+
+    <div class="sub-title">Section 7 — Risques identifiés</div>
+
+    <div style="background:var(--fond);border-radius:8px;padding:16px;margin-bottom:12px;border:1px solid var(--gris-clair);">
+      <div class="grid-2" style="gap:12px;">
+        <div class="field">
+          <label>Risque 1</label>
+          <input type="text" id="risque_1" placeholder="Ex : dépendance à un seul fournisseur">
+        </div>
+        <div class="field">
+          <label>Mitigant 1</label>
+          <input type="text" id="mitigant_1" placeholder="Ex : deux fournisseurs alternatifs identifiés">
+        </div>
+      </div>
+    </div>
+
+    <div style="background:var(--fond);border-radius:8px;padding:16px;margin-bottom:12px;border:1px solid var(--gris-clair);">
+      <div class="grid-2" style="gap:12px;">
+        <div class="field">
+          <label>Risque 2</label>
+          <input type="text" id="risque_2" placeholder="Ex : saisonnalité de l'activité">
+        </div>
+        <div class="field">
+          <label>Mitigant 2</label>
+          <input type="text" id="mitigant_2" placeholder="Ex : 9 ans d'ancienneté, a traversé plusieurs cycles">
+        </div>
+      </div>
+    </div>
+
+    <div style="background:var(--fond);border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid var(--gris-clair);">
+      <div class="grid-2" style="gap:12px;">
+        <div class="field">
+          <label>Risque 3 (optionnel)</label>
+          <input type="text" id="risque_3" placeholder="Ex : tension de trésorerie ponctuelle">
+        </div>
+        <div class="field">
+          <label>Mitigant 3</label>
+          <input type="text" id="mitigant_3" placeholder="Ex : démarche proactive avant dégradation">
+        </div>
+      </div>
+    </div>
+
+    <div class="field" style="margin-bottom:16px;">
+      <label>Niveau de risque global</label>
+      <select id="niveau_risque">
+        <option value="faible, bien couvert">Faible — bien couvert</option>
+        <option value="modéré, bien couvert" selected>Modéré — bien couvert</option>
+        <option value="modéré, à surveiller">Modéré — à surveiller</option>
+        <option value="élevé, à surveiller">Élevé — à surveiller</option>
+        <option value="élevé, insuffisamment couvert">Élevé — insuffisamment couvert</option>
+      </select>
+    </div>
+
+    <div class="sub-title">Section 8 — Conditions particulières</div>
+    <div class="field" style="margin-bottom:16px;">
+      <label>Conditions particulières attachées à la recommandation (optionnel)</label>
+      <textarea id="conditions_particulieres" rows="3" placeholder="Ex : visite de suivi au 3ème mois pour vérifier la reconstitution du stock, domiciliation des recettes, renouvellement de la caution à mi-parcours..." style="width:100%;padding:10px 14px;border:1.5px solid var(--gris-clair);border-radius:8px;font-family:'DM Sans',sans-serif;font-size:0.88rem;resize:vertical;background:var(--fond);outline:none;"></textarea>
+    </div>
+
+    <div class="field" style="margin-bottom:16px;">
+      <label>Phrase de conclusion (ce qui fait que le dossier se défend)</label>
+      <textarea id="conclusion_comite" rows="3" placeholder="Ex : Monsieur X n'est pas un pari. C'est un client prouvé, avec une activité saine, des chiffres cohérents et un historique sans tache..." style="width:100%;padding:10px 14px;border:1.5px solid var(--gris-clair);border-radius:8px;font-family:'DM Sans',sans-serif;font-size:0.88rem;resize:vertical;background:var(--fond);outline:none;"></textarea>
+    </div>
+
+    <div class="sub-title">Informations complémentaires</div>
+    <div class="grid-2">
+      <div class="field"><label>Numéro de dossier</label><input type="text" id="num_dossier" placeholder="Ex : 2026-047"></div>
+      <div class="field"><label>Agence</label><input type="text" id="agence" placeholder="Ex : Agence de Tchaourou"></div>
+      <div class="field"><label>Date de présentation au comité</label><input type="date" id="date_comite"></div>
+      <div class="field"><label>Nom du chargé de crédit</label><input type="text" id="nom_charge" placeholder="Ex : Sylvanus BABA"></div>
+    </div>
+  </div>
+</div>
+
+
+<script>
+// ========== UTILITAIRES ==========
+function fmt(n){if(isNaN(n)||n===null||n===undefined)return'—';return Math.round(n).toLocaleString('fr-FR')+' FCFA';}
+function fmtPct(n){if(isNaN(n)||n===null)return'—';return n.toFixed(2)+' %';}
+function v(id){return parseFloat(document.getElementById(id)?.value)||0;}
+function setVal(id,val,cls){const el=document.getElementById(id);if(!el)return;el.value=val;el.className='calc '+(cls||'');}
+
+function showTab(name,btn){
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+  if(btn) btn.classList.add('active');
+}
+
+// ========== ② DEMANDE ==========
+function getPeriodeMois(){
+  const tc=document.getElementById('type_credit')?.value||'mensuel';
+  if(tc==='mensuel') return 1;
+  if(tc==='bimestriel') return 2;
+  if(tc==='trimestriel') return 3;
+  if(tc==='semestriel') return 6;
+  return 0; // terme
+}
+
+function onTypeCredit(){
+  const tc=document.getElementById('type_credit')?.value||'mensuel';
+  const fieldNb=document.getElementById('field_nb_echeances');
+  const info=document.getElementById('info_type_credit');
+  if(tc==='terme'){
+    if(fieldNb) fieldNb.style.display='none';
+    if(info){info.style.display='block';info.textContent="Crédit à terme : remboursement unique capital + intérêts + commission à la date d'échéance.";}
+  } else if(tc==='bimestriel'||tc==='trimestriel'||tc==='semestriel'){
+    if(fieldNb) fieldNb.style.display='flex';
+    const pm=getPeriodeMois();
+    if(info){info.style.display='block';info.textContent="Périodicité "+tc+" : une échéance tous les "+pm+" mois. Taux par période = 1,8% × "+pm+" = "+(1.8*pm).toFixed(2)+"%. Dégressif quasi constant.";}
+  } else {
+    if(fieldNb) fieldNb.style.display='none';
+    if(info){info.style.display='block';info.textContent="Mensuel dégressif quasi constant : taux 1,8%/mois sur capital restant dû + commission 1,9% par échéance.";}
+  }
+  calcDemande();
+}
+
+function calcDemande(){
+  const P=v('montant_simule');
+  const tm=v('taux_mensuel')/100||0.018;
+  const duree=v('duree');
+  const comm=v('taux_commission')/100||0.019;
+  const tc=document.getElementById('type_credit')?.value||'mensuel';
+
+  if(!P||!duree) return;
+
+  const setD=(id,val,cls)=>setVal(id,val,cls||'');
+
+  // ---- CRÉDIT À TERME ----
+  if(tc==='terme'){
+    const interets=P*tm*duree;
+    const sousTotal=P+interets;
+    const commission=sousTotal*comm;
+    const total=sousTotal+commission;
+    setD('echeance_base',fmt(sousTotal));
+    setD('commission_echeance',fmt(commission));
+    setD('echeance_calc',fmt(total),'positif');
+    setD('nb_ech_calc','1 (terme)');
+    setD('total_interets',fmt(interets));
+    setD('total_commissions',fmt(commission));
+    setD('cout_total',fmt(total));
+    return;
+  }
+
+  // ---- CRÉDITS À PLUSIEURS ÉCHÉANCES ----
+  const pm=getPeriodeMois(); // mois par période
+  let nbEch;
+  if(tc==='mensuel'){
+    nbEch=duree;
+  } else {
+    nbEch=v('nb_echeances')||Math.floor(duree/pm);
+  }
+  if(!nbEch) return;
+
+  const tPeriode=tm*pm; // taux par période (linéaire, comme convenu)
+  // Échéance de base quasi constante (formule actuarielle sur taux période)
+  let echBase;
+  if(tPeriode>0){
+    echBase=P*tPeriode*Math.pow(1+tPeriode,nbEch)/(Math.pow(1+tPeriode,nbEch)-1);
+  } else {
+    echBase=P/nbEch;
+  }
+  const commParEch=echBase*comm;
+  const echTotale=echBase+commParEch;
+
+  // Total intérêts = total remboursé (base) - capital
+  const totalBase=echBase*nbEch;
+  const totalInterets=totalBase-P;
+  const totalComm=commParEch*nbEch;
+  const coutTotal=P+totalInterets+totalComm;
+
+  setD('echeance_base',fmt(echBase));
+  setD('commission_echeance',fmt(commParEch));
+  setD('echeance_calc',fmt(echTotale),'positif');
+  setD('nb_ech_calc',nbEch+' échéance(s)');
+  setD('total_interets',fmt(totalInterets));
+  setD('total_commissions',fmt(totalComm));
+  setD('cout_total',fmt(coutTotal));
+}
+
+// ========== ③ CA TERRAIN ==========
+function calcCAterrain(){
+  const v1=v('ca_veille'),v2=v('ca_j3'),v3=v('ca_jour');
+  const nb=(v1>0?1:0)+(v2>0?1:0)+(v3>0?1:0);
+  if(nb===0)return;
+  const moy=(v1+v2+v3)/nb;
+  const jours=v('jours_mois');
+  const caMensuel=moy*jours;
+  setVal('ca_moy_jour',fmt(moy));
+  setVal('ca_mensuel_calc',fmt(caMensuel),'positif');
+  setVal('ca_annuel_calc',fmt(caMensuel*12));
+  // Reporter dans exploitation et produits
+  if(document.getElementById('ca'))document.getElementById('ca').value=Math.round(caMensuel)||'';
+  setVal('ca_repris',fmt(caMensuel));
+  calcExploitation();calcProduits();
+}
+
+// ========== ④ PRODUITS & MARGES ==========
+let produits=[];
+function ajouterProduit(){
+  const id=Date.now();
+  produits.push(id);
+  const div=document.createElement('div');
+  div.id='produit-'+id;
+  div.className='dyn-row';
+  div.style.gridTemplateColumns='2fr 1fr 1fr 1fr auto';
+  div.innerHTML=`
+    <div class="field"><label>Produit</label><input type="text" placeholder="Nom du produit" oninput="calcProduits()"></div>
+    <div class="field"><label>Prix achat unit. (FCFA)</label><input type="number" placeholder="0" class="pa" oninput="calcProduits()"></div>
+    <div class="field"><label>Prix vente unit. (FCFA)</label><input type="number" placeholder="0" class="pv" oninput="calcProduits()"></div>
+    <div class="field"><label>Taux marge (%)</label><input type="text" class="calc tm-calc" readonly></div>
+    <div style="display:flex;align-items:flex-end;"><button class="btn btn-danger" onclick="supprimerProduit(${id})">✕</button></div>`;
+  document.getElementById('produits-list').appendChild(div);
+}
+
+function supprimerProduit(id){
+  produits=produits.filter(p=>p!==id);
+  document.getElementById('produit-'+id)?.remove();
+  calcProduits();
+}
+
+function calcProduits(){
+  let sommeMarges=0,nbProduits=0;
+  document.querySelectorAll('#produits-list .dyn-row').forEach(row=>{
+    const pa=parseFloat(row.querySelector('.pa')?.value)||0;
+    const pv=parseFloat(row.querySelector('.pv')?.value)||0;
+    const tm=pv>0?((pv-pa)/pv)*100:0;
+    const tmEl=row.querySelector('.tm-calc');
+    if(tmEl){tmEl.value=fmtPct(tm);tmEl.className='calc '+(tm>15?'positif':tm>8?'attention':'negatif');}
+    if(pv>0){sommeMarges+=tm;nbProduits++;}
+  });
+  // Taux moyen simple (non pondéré par quantité — quantités retirées)
+  const tauxGlobal=nbProduits>0?sommeMarges/nbProduits:0;
+  const caTerrain=v('ca')||0;
+  const mbCalc=caTerrain*(tauxGlobal/100);
+  const cmvCalc=caTerrain-mbCalc;
+  setVal('taux_marge_global',fmtPct(tauxGlobal));
+  setVal('ca_repris',fmt(caTerrain));
+  setVal('mb_produits',fmt(mbCalc),'positif');
+  setVal('cmv_produits',fmt(cmvCalc));
+  if(document.getElementById('cmv')&&tauxGlobal>0){
+    document.getElementById('cmv').value=Math.round(cmvCalc)||'';
+    calcExploitation();
+  }
+}
+
+// ========== ⑥ IMMOBILISATIONS ==========
+let immos=[];
+function ajouterImmo(){
+  const id=Date.now();
+  immos.push(id);
+  const div=document.createElement('div');
+  div.id='immo-'+id;
+  div.className='dyn-row';
+  div.style.gridTemplateColumns='2fr 1fr 1fr 1fr 1fr 1fr auto';
+  div.innerHTML=`
+    <div class="field"><label>Désignation</label><input type="text" placeholder="Table, moto, machine..." oninput="calcImmos()"></div>
+    <div class="field"><label>Prix acquisition (FCFA)</label><input type="number" placeholder="0" class="immo-prix" oninput="calcImmos()"></div>
+    <div class="field"><label>Durée de vie (ans)</label><input type="number" placeholder="5" class="immo-duree" oninput="calcImmos()"></div>
+    <div class="field"><label>Ancienneté (ans)</label><input type="number" placeholder="0" class="immo-age" oninput="calcImmos()"></div>
+    <div class="field"><label>VNC (FCFA)</label><input type="text" class="calc immo-vnc" readonly></div>
+    <div class="field"><label>Dot/mois (FCFA)</label><input type="text" class="calc immo-dot" readonly></div>
+    <div style="display:flex;align-items:flex-end;"><button class="btn btn-danger" onclick="supprimerImmo(${id})">✕</button></div>`;
+  document.getElementById('immos-list').appendChild(div);
+}
+
+function supprimerImmo(id){
+  immos=immos.filter(i=>i!==id);
+  document.getElementById('immo-'+id)?.remove();
+  calcImmos();
+}
+
+function calcImmos(){
+  let brutTotal=0,amortCumul=0,vncTotal=0,dotTotal=0;
+  document.querySelectorAll('#immos-list .dyn-row').forEach(row=>{
+    const prix=parseFloat(row.querySelector('.immo-prix')?.value)||0;
+    const duree=parseFloat(row.querySelector('.immo-duree')?.value)||1;
+    const age=parseFloat(row.querySelector('.immo-age')?.value)||0;
+    const dotAnnuelle=prix/duree;
+    const amortCum=Math.min(dotAnnuelle*age,prix);
+    const vnc=Math.max(prix-amortCum,0);
+    const dotMensuelle=vnc>0?(dotAnnuelle/12):0;
+    const vncEl=row.querySelector('.immo-vnc');
+    const dotEl=row.querySelector('.immo-dot');
+    if(vncEl)vncEl.value=fmt(vnc);
+    if(dotEl)dotEl.value=fmt(dotMensuelle);
+    brutTotal+=prix;amortCumul+=amortCum;vncTotal+=vnc;dotTotal+=dotMensuelle;
+  });
+  // Ajouter petits outils (pas d'amortissement calculé, valeur nette directe)
+  const petits=v('petits_outils');
+  vncTotal+=petits;brutTotal+=petits;
+  setVal('immo_brut_total',fmt(brutTotal));
+  setVal('immo_amort_cumul',fmt(amortCumul));
+  setVal('immo_vnc',fmt(vncTotal),'positif');
+  setVal('immo_dot_mensuelle',fmt(dotTotal));
+  // Reporter dans bilan et exploitation
+  const immosBilan=document.getElementById('immos_bilan');
+  if(immosBilan)immosBilan.value=fmt(vncTotal);
+  const amortExpl=document.getElementById('amort_mensuel_expl');
+  if(amortExpl)amortExpl.value=fmt(dotTotal);
+  calcBilan();calcExploitation();
+}
+
+// ========== ⑤ EXPLOITATION ==========
+function calcExploitation(){
+  const ca=v('ca'),cmv=v('cmv');
+  const mb=ca-cmv;
+  const taux=ca>0?(mb/ca)*100:0;
+  const dotAmort=v('amort_mensuel_expl')||parseFloat(document.getElementById('amort_mensuel_expl')?.value?.replace(/[^0-9.-]/g,''))||0;
+  const cf=v('services')+v('loyer')+v('impots')+v('salaires')+dotAmort+v('interets_paye')+v('autres_charges_exp');
+  const res=mb-cf;
+  setVal('mb_calc',fmt(mb),mb>=0?'positif':'negatif');
+  setVal('taux_mb',fmtPct(taux));
+  setVal('total_cf',fmt(cf));
+  setVal('resultat_expl',fmt(res),res>=0?'positif':'negatif');
+  setVal('end',fmt(res),res>=0?'positif':'negatif');
+  const solde=res-v('depenses_menage')+v('autres_revenus');
+  setVal('solde_menage',fmt(solde),solde>=0?'positif':'negatif');
+}
+
+// ========== ⑦ BILAN ==========
+function calcBilan(){
+  const stocks=v('stocks'),creances=v('creances'),dispo=v('dispo'),autresA=v('autres_actifs');
+  // VNC depuis immobilisations
+  const vncRaw=document.getElementById('immos_bilan')?.value||'0';
+  const vnc=parseFloat(vncRaw.replace(/[^0-9.-]/g,''))||v('immos_bilan')||0;
+  const totalActif=stocks+creances+vnc+dispo+autresA;
+  const dfourn=v('dettes_fourn'),dfin=v('dettes_fin'),dautres=v('autres_dettes');
+  const totalDettes=dfourn+dfin+dautres;
+  const fp=totalActif-totalDettes;
+  setVal('total_actif',fmt(totalActif));
+  setVal('total_dettes',fmt(totalDettes));
+  setVal('fonds_propres',fmt(fp),fp>=0?'positif':'negatif');
+  setVal('total_passif',fmt(totalActif));
+  const fr=fp-vnc;
+  const bfr=stocks+creances-dfourn;
+  const tn=fr-bfr;
+  const autonomie=totalActif>0?(fp/totalActif)*100:0;
+  setVal('fr',fmt(fr),fr>=0?'positif':'negatif');
+  setVal('bfr',fmt(bfr));
+  setVal('tn',fmt(tn),tn>=0?'positif':(tn>-500000?'attention':'negatif'));
+  setVal('autonomie',fmtPct(autonomie),autonomie>50?'positif':'attention');
+}
+
+// ========== ⑧ GARANTIES ==========
+let cautions=[];
+function ajouterCaution(){
+  const id=Date.now();
+  cautions.push(id);
+  const div=document.createElement('div');
+  div.id='caution-'+id;
+  div.className='dyn-row';
+  div.style.gridTemplateColumns='2fr 1fr 2fr 1fr 1fr 1fr auto';
+  div.innerHTML=`
+    <div class="field"><label>Nom & prénom</label><input type="text" placeholder="Prénom NOM" oninput="calcGaranties()"></div>
+    <div class="field"><label>Profession</label><input type="text" placeholder="Activité" oninput="calcGaranties()"></div>
+    <div class="field"><label>Localisation</label><input type="text" placeholder="Ville" oninput="calcGaranties()"></div>
+    <div class="field"><label>Revenu mensuel (FCFA)</label><input type="number" placeholder="0" class="caut-revenu" oninput="calcGaranties()"></div>
+    <div class="field"><label>Engagement/mois (FCFA)</label><input type="number" placeholder="0" class="caut-engage" oninput="calcGaranties()"></div>
+    <div class="field"><label>CC (%)</label><input type="text" class="calc caut-cc" readonly></div>
+    <div style="display:flex;align-items:flex-end;"><button class="btn btn-danger" onclick="supprimerCaution(${id})">✕</button></div>`;
+  document.getElementById('cautions-list').appendChild(div);
+}
+
+function supprimerCaution(id){
+  cautions=cautions.filter(c=>c!==id);
+  document.getElementById('caution-'+id)?.remove();
+  calcGaranties();
+}
+
+function calcGaranties(){
+  let totalEngage=0;
+  document.querySelectorAll('#cautions-list .dyn-row').forEach(row=>{
+    const rev=parseFloat(row.querySelector('.caut-revenu')?.value)||0;
+    const eng=parseFloat(row.querySelector('.caut-engage')?.value)||0;
+    const cc=rev>0?(eng/rev)*100:0;
+    const ccEl=row.querySelector('.caut-cc');
+    if(ccEl){ccEl.value=fmtPct(cc);ccEl.className='calc '+(cc<=33?'positif':cc<=50?'attention':'negatif');}
+    totalEngage+=eng;
+  });
+  setVal('total_engage_cautions',fmt(totalEngage));
+  const P=v('montant_simule'),tm=v('taux_mensuel')/100,n=v('duree');
+  let ech=0;
+  if(P>0&&n>0&&tm>0)ech=P*tm*Math.pow(1+tm,n)/(Math.pow(1+tm,n)-1);
+  else if(P>0&&n>0)ech=P/n;
+  const couv=ech>0?(totalEngage/ech)*100:0;
+  setVal('couv_cautions',fmtPct(couv),couv>=50?'positif':couv>=25?'attention':'negatif');
+}
+
+// ========== ⑨ AMORTISSEMENT ==========
+function getEcheance(){
+  const P=v('montant_simule'),tm=v('taux_mensuel')/100||0.018,duree=v('duree');
+  const tc=document.getElementById('type_credit')?.value||'mensuel';
+  const comm=v('taux_commission')/100||0.019;
+  if(!P||!duree) return 0;
+  if(tc==='terme'){
+    const sousTotal=P+P*tm*duree;
+    return sousTotal*(1+comm);
+  }
+  const pm=getPeriodeMois();
+  const nbEch=tc==='mensuel'?duree:(v('nb_echeances')||Math.floor(duree/pm));
+  if(!nbEch) return 0;
+  const tP=tm*pm;
+  const echBase=tP>0?P*tP*Math.pow(1+tP,nbEch)/(Math.pow(1+tP,nbEch)-1):P/nbEch;
+  return echBase*(1+comm);
+}
+
+function getEcheancePour(montant){
+  const tm=v('taux_mensuel')/100||0.018,duree=v('duree');
+  const tc=document.getElementById('type_credit')?.value||'mensuel';
+  const comm=v('taux_commission')/100||0.019;
+  if(!montant||!duree) return 0;
+  if(tc==='terme'){
+    const sousTotal=montant+montant*tm*duree;
+    return sousTotal*(1+comm);
+  }
+  const pm=getPeriodeMois();
+  const nbEch=tc==='mensuel'?duree:(v('nb_echeances')||Math.floor(duree/pm));
+  if(!nbEch) return 0;
+  const tP=tm*pm;
+  const echBase=tP>0?montant*tP*Math.pow(1+tP,nbEch)/(Math.pow(1+tP,nbEch)-1):montant/nbEch;
+  return echBase*(1+comm);
+}
+
+function genererAmortissement(){
+  const P=v('montant_simule');
+  const tm=v('taux_mensuel')/100||0.018;
+  const duree=v('duree');
+  const comm=v('taux_commission')/100||0.019;
+  const tc=document.getElementById('type_credit')?.value||'mensuel';
+  const conteneur=document.getElementById('tableau-amort');
+
+  if(!P||!duree){
+    conteneur.innerHTML='<p style="color:var(--rouge)">Renseigne d\'abord le montant simulé et la durée.</p>';
+    return;
+  }
+
+  // ---- CRÉDIT À TERME ----
+  if(tc==='terme'){
+    const interets=P*tm*duree;
+    const sousTotal=P+interets;
+    const commission=sousTotal*comm;
+    const total=sousTotal+commission;
+    conteneur.innerHTML=`
+      <div class="info-box">Crédit à terme — remboursement unique à l'échéance</div>
+      <table>
+        <thead><tr>
+          <th style="text-align:left">Rubrique</th>
+          <th>Montant (FCFA)</th>
+        </tr></thead>
+        <tbody>
+          <tr><td>Capital</td><td>${Math.round(P).toLocaleString('fr-FR')}</td></tr>
+          <tr><td>Intérêts totaux (${duree} mois × 1,8% × ${Math.round(P).toLocaleString('fr-FR')})</td><td>${Math.round(interets).toLocaleString('fr-FR')}</td></tr>
+          <tr><td>Sous-total (Capital + Intérêts)</td><td>${Math.round(sousTotal).toLocaleString('fr-FR')}</td></tr>
+          <tr><td>Commission (${(comm*100).toFixed(1)}% × Sous-total)</td><td>${Math.round(commission).toLocaleString('fr-FR')}</td></tr>
+        </tbody>
+        <tfoot><tr><td><strong>MONTANT UNIQUE À REMBOURSER</strong></td><td><strong>${Math.round(total).toLocaleString('fr-FR')}</strong></td></tr></tfoot>
+      </table>`;
+    return;
+  }
+
+  // ---- CRÉDITS PÉRIODIQUES ----
+  const pm=getPeriodeMois();
+  const nbEch=tc==='mensuel'?duree:(v('nb_echeances')||Math.floor(duree/pm));
+  if(!nbEch){
+    conteneur.innerHTML='<p style="color:var(--rouge)">Renseigne le nombre d\'échéances.</p>';
+    return;
+  }
+  const tP=tm*pm;
+  const echBase=tP>0?P*tP*Math.pow(1+tP,nbEch)/(Math.pow(1+tP,nbEch)-1):P/nbEch;
+  const commParEch=echBase*comm;
+  const echTotale=echBase+commParEch;
+
+  const labelPeriode=tc==='mensuel'?'Mois':tc==='bimestriel'?'Bimestre':tc==='trimestriel'?'Trimestre':'Semestre';
+  let rows='',solde=P,totCap=0,totInt=0,totComm=0,totEch=0;
+
+  for(let i=1;i<=nbEch;i++){
+    const interets=solde*tP;
+    const cap=echBase-interets;
+    solde=Math.max(0,solde-cap);
+    totCap+=cap;totInt+=interets;totComm+=commParEch;totEch+=echTotale;
+    rows+=`<tr>
+      <td style="text-align:center;font-weight:600;color:var(--gris)">${i}</td>
+      <td>${Math.round(echBase).toLocaleString('fr-FR')}</td>
+      <td>${Math.round(cap).toLocaleString('fr-FR')}</td>
+      <td>${Math.round(interets).toLocaleString('fr-FR')}</td>
+      <td>${Math.round(commParEch).toLocaleString('fr-FR')}</td>
+      <td style="font-weight:700;color:var(--bleu)">${Math.round(echTotale).toLocaleString('fr-FR')}</td>
+      <td>${Math.round(solde).toLocaleString('fr-FR')}</td>
+    </tr>`;
+  }
+
+  const typelabel={mensuel:'Mensuel dégressif quasi constant',bimestriel:'Bimestriel dégressif quasi constant',trimestriel:'Trimestriel dégressif quasi constant',semestriel:'Semestriel dégressif quasi constant'};
+  conteneur.innerHTML=`
+    <div class="info-box" style="margin-bottom:12px;">
+      ${typelabel[tc]||''} — Taux mensuel : ${(tm*100).toFixed(2)}% | Taux/période : ${(tP*100).toFixed(2)}% | Commission : ${(comm*100).toFixed(1)}%/échéance
+    </div>
+    <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>${labelPeriode}</th>
+        <th>Échéance base (FCFA)</th>
+        <th>Capital (FCFA)</th>
+        <th>Intérêts (FCFA)</th>
+        <th>Commission (FCFA)</th>
+        <th>Échéance totale (FCFA)</th>
+        <th>Capital restant (FCFA)</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr>
+        <td>TOTAL</td>
+        <td>${Math.round(echBase*nbEch).toLocaleString('fr-FR')}</td>
+        <td>${Math.round(totCap).toLocaleString('fr-FR')}</td>
+        <td>${Math.round(totInt).toLocaleString('fr-FR')}</td>
+        <td>${Math.round(totComm).toLocaleString('fr-FR')}</td>
+        <td>${Math.round(totEch).toLocaleString('fr-FR')}</td>
+        <td>—</td>
+      </tr></tfoot>
+    </table>
+    </div>`;
+}
+
+// ========== ⑩ ANALYSE ==========
+function getEcheance(){
+  const P=v('montant_simule'),tm=v('taux_mensuel')/100,n=v('duree');
+  if(P>0&&n>0&&tm>0)return P*tm*Math.pow(1+tm,n)/(Math.pow(1+tm,n)-1);
+  if(P>0&&n>0)return P/n;
+  return 0;
+}
+
+function getEcheancePour(montant){
+  const tm=v('taux_mensuel')/100,n=v('duree');
+  if(montant>0&&n>0&&tm>0)return montant*tm*Math.pow(1+tm,n)/(Math.pow(1+tm,n)-1);
+  if(montant>0&&n>0)return montant/n;
+  return 0;
+}
+
+// Calcule le montant finançable basé sur toutes les règles
+function calcMontantFinancable(end,fr,bfr,caf_annuel,montant_sollicite,n,tm){
+  // Règle 1 : max 50% du BFR
+  const max_bfr = bfr>0 ? bfr*0.5 : Infinity;
+  // Règle 2 : FR doit dépasser 2x le montant accordé → max = FR/2
+  const max_fr = fr>0 ? fr/2 : 0;
+  // Règle 3 : annuités annuelles ≤ 50% de la CAF annuelle
+  // Annuité annuelle = échéance mensuelle × 12
+  // On cherche P tel que ech(P)×12 ≤ 0.5×CAF
+  // ech(P) = P×tm×(1+tm)^n / ((1+tm)^n - 1) si tm>0, sinon P/n
+  let max_caf = Infinity;
+  if(caf_annuel>0){
+    const annuite_max = caf_annuel*0.5;
+    const ech_mensuel_max = annuite_max/12;
+    if(tm>0){
+      const facteur = tm*Math.pow(1+tm,n)/(Math.pow(1+tm,n)-1);
+      max_caf = facteur>0 ? ech_mensuel_max/facteur : Infinity;
+    } else if(n>0){
+      max_caf = ech_mensuel_max*n;
+    }
+  }
+  // Règle 4 : END mensuel doit couvrir l'échéance (couverture ≥ 1)
+  // ech(P) ≤ END → P ≤ END/facteur
+  let max_end = Infinity;
+  if(end>0&&tm>0&&n>0){
+    const facteur=tm*Math.pow(1+tm,n)/(Math.pow(1+tm,n)-1);
+    max_end = facteur>0 ? end/facteur : Infinity;
+  } else if(end>0&&n>0){
+    max_end = end*n;
+  }
+  // Montant finançable = minimum de toutes les contraintes
+  let mf = Math.min(max_bfr, max_fr, max_caf, max_end);
+  mf = Math.max(0, mf);
+  // Plafonner au montant sollicité
+  if(montant_sollicite>0) mf = Math.min(mf, montant_sollicite);
+  return {mf:Math.round(mf), max_bfr, max_fr, max_caf, max_end};
+}
+
+function calcAnalyse(){
+  const ca=v('ca'),cmv=v('cmv');
+  const mb=ca-cmv;
+  const dotAmortRaw=document.getElementById('amort_mensuel_expl')?.value||'0';
+  const dotAmort=parseFloat(dotAmortRaw.replace(/[^0-9.-]/g,''))||0;
+  const cf=v('services')+v('loyer')+v('impots')+v('salaires')+dotAmort+v('interets_paye')+v('autres_charges_exp');
+  const end=mb-cf;
+  const taux_mb=ca>0?(mb/ca)*100:0;
+  const stocks=v('stocks'),creances=v('creances'),dispo=v('dispo');
+  const vncRaw=document.getElementById('immos_bilan')?.value||'0';
+  const vnc=parseFloat(vncRaw.replace(/[^0-9.-]/g,''))||0;
+  const totalActif=stocks+creances+vnc+dispo+v('autres_actifs');
+  const totalDettes=v('dettes_fourn')+v('dettes_fin')+v('autres_dettes');
+  const fp=totalActif-totalDettes;
+  const fr=fp-vnc,bfr=stocks+creances-v('dettes_fourn'),tn=fr-bfr;
+  const autonomie=totalActif>0?(fp/totalActif)*100:0;
+  const sr=taux_mb>0?cf/(taux_mb/100):0;
+  const ms=ca-sr;
+  const indice_sec=ca>0?(ms/ca)*100:0;
+  const rotation_jours=ca>0?(stocks/cmv>0?(stocks/cmv)*30:(stocks/ca)*30):0;
+  const taux_endet=fp>0?(totalDettes/fp)*100:0;
+  const ech=getEcheance();
+  const couv=ech>0?end/ech:0;
+  const caf_annuel=end*12;
+  const annuite_annuelle=ech*12;
+  const taux_couv_annuites=caf_annuel>0?(annuite_annuelle/caf_annuel)*100:0;
+  const rent_eco=totalActif>0?(end/totalActif)*100:0;
+  const tm=v('taux_mensuel')/100;
+  const taux_annuel_eff=tm>0?(Math.pow(1+tm,12)-1)*100:0;
+  const liq_gen=totalDettes>0?((stocks+creances+dispo)/totalDettes):0;
+  const liq_red=totalDettes>0?((creances+dispo)/totalDettes):0;
+  const montant_sollicite=v('montant_sollicite');
+  const n=v('duree');
+
+  // CALCUL MONTANT FINANÇABLE
+  const {mf,max_bfr,max_fr,max_caf,max_end}=calcMontantFinancable(end,fr,bfr,caf_annuel,montant_sollicite,n,tm);
+  const ech_mf=getEcheancePour(mf);
+
+  // VÉRIFICATION DES NORMES
+  const normes=[];
+  const norme=(label,valeur,ok,warn_txt,ok_txt,statut)=>normes.push({label,valeur,ok,warn_txt,ok_txt,statut});
+
+  // Rentabilité économique vs taux d'intérêt annuel effectif
+  const rent_ok = rent_eco >= taux_annuel_eff;
+  norme('Rentabilité éco vs Taux annuel effectif',
+    fmtPct(rent_eco)+' vs '+fmtPct(taux_annuel_eff),
+    rent_ok,
+    'Effet de massue : la dette détruit de la valeur',
+    'Effet de levier positif : favorable',
+    rent_eco>=20?'ok':rent_eco>=10?'warn':'ko'
+  );
+
+  // Taux couverture annuités / CAF
+  const couv_ok=taux_couv_annuites<=50;
+  const couv_warn=taux_couv_annuites<=70;
+  norme('Annuités / CAF annuelle (norme ≤ 50%)',
+    fmtPct(taux_couv_annuites),
+    couv_ok,'Trop chargé (>70%) : refus ou restructuration',
+    'Confortable (<50%) : favorable',
+    couv_ok?'ok':couv_warn?'warn':'ko'
+  );
+
+  // FR > 0
+  norme('Fonds de Roulement > 0',fmt(fr),fr>0,
+    'FR négatif : déséquilibre structurel grave',
+    'FR positif : situation saine',fr>0?'ok':'ko');
+
+  // FR ≥ 2x montant finançable
+  const fr_ok=mf>0?fr>=2*mf:fr>0;
+  norme('FR ≥ 2x montant proposé ('+fmt(2*mf)+')',
+    fmt(fr),fr_ok,
+    'FR insuffisant pour couvrir 2x le crédit',
+    'FR suffisant : couverture assurée',fr_ok?'ok':'ko');
+
+  // Trésorerie nette
+  norme('Trésorerie Nette ≥ 0',fmt(tn),tn>=0,
+    'Trésorerie négative : tension cash',
+    'Trésorerie positive : équilibre sain',tn>=0?'ok':tn>-200000?'warn':'ko');
+
+  // Marge de sécurité > 20%
+  norme('Marge de sécurité > 20%',fmtPct(indice_sec),indice_sec>20,
+    'Vulnérabilité élevée face aux chocs',
+    'Entreprise solide face aux baisses d\'activité',
+    indice_sec>20?'ok':indice_sec>10?'warn':'ko');
+
+  // Liquidité générale [1.5–2]
+  norme('Liquidité générale [1,5 à 2]',liq_gen.toFixed(2),liq_gen>=1.5&&liq_gen<=2.5,
+    liq_gen<1?'< 1 : ne peut pas couvrir dettes CT — refus':'Hors norme, analyser',
+    'Zone saine [1,5–2]',liq_gen>=1.5?'ok':liq_gen>=1?'warn':'ko');
+
+  // Liquidité réduite > 0.5
+  norme('Liquidité réduite > 0,5',liq_red.toFixed(2),liq_red>=0.5,
+    '< 0,5 : dépendance totale au stock',
+    '≥ 0,5 : couverture partielle sans stock acceptable',
+    liq_red>=1?'ok':liq_red>=0.5?'warn':'ko');
+
+  // Rotation stock (commerce général : norme 15-30j, alerte >45j)
+  norme('Rotation stock (commerce : norme 15–30 j)',Math.round(rotation_jours)+' jours',rotation_jours<=45,
+    '> 45 j : stock lent, cash immobilisé',
+    '≤ 30 j : bonne rotation',
+    rotation_jours<=30?'ok':rotation_jours<=45?'warn':'ko');
+
+  // Couverture échéance par END
+  norme('Couverture échéance (END/Éch. ≥ 1)',couv.toFixed(2)+'x',couv>=1,
+    '< 0,8 : capacité insuffisante seule',
+    '≥ 1,2 : capacité confortable',
+    couv>=1.2?'ok':couv>=0.8?'warn':'ko');
+
+  // BFR financement max 50%
+  const bfr_ok=mf<=bfr*0.5||bfr<=0;
+  norme('Financement ≤ 50% du BFR (max '+fmt(bfr*0.5)+')',fmt(mf),bfr_ok,
+    '> 50% du BFR : surfinancement du cycle',
+    '≤ 50% du BFR : règle respectée',bfr_ok?'ok':'warn');
+
+  function badge(val,ok,warn,inv){
+    if(inv){return val<=ok?'vert':val<=warn?'':'rouge';}
+    return val>=ok?'vert':val>=warn?'':'rouge';
+  }
+
+  const cards=[
+    {l:'CA mensuel',v:fmt(ca),s:'Annuel : '+fmt(ca*12),c:'bleu'},
+    {l:'Taux de marge brute',v:fmtPct(taux_mb),s:taux_mb>15?'Marge satisfaisante':'Marge serrée',c:badge(taux_mb,15,10)},
+    {l:'END / CAF mensuelle',v:fmt(end),s:'CAF annuelle : '+fmt(caf_annuel),c:badge(end,1,0)},
+    {l:'Seuil de rentabilité',v:fmt(sr),s:'CA min rentable/mois',c:'bleu'},
+    {l:'Marge de sécurité',v:fmtPct(indice_sec),s:indice_sec>20?'Solide':'Vulnérable',c:badge(indice_sec,20,10)},
+    {l:'Fonds de Roulement (FR)',v:fmt(fr),s:fr>=bfr?'FR couvre le BFR':'FR < BFR',c:badge(fr,0,-1)},
+    {l:'BFR',v:fmt(bfr),s:'50% BFR = '+fmt(bfr*0.5),c:'bleu'},
+    {l:'Trésorerie Nette',v:fmt(tn),s:tn>=0?'Équilibre':'Tension',c:badge(tn,0,-200000)},
+    {l:'Liquidité générale',v:liq_gen.toFixed(2),s:'Norme : 1,5 à 2',c:badge(liq_gen,1.5,1)},
+    {l:'Liquidité réduite',v:liq_red.toFixed(2),s:'Norme : > 0,5',c:badge(liq_red,1,0.5)},
+    {l:'Autonomie financière',v:fmtPct(autonomie),s:'FP / Total actif',c:badge(autonomie,60,40)},
+    {l:'Rotation du stock',v:Math.round(rotation_jours)+' jours',s:'Norme commerce : 15–30j',c:badge(rotation_jours,0,45,true)},
+    {l:'Couverture échéance',v:couv.toFixed(2)+'x',s:couv>=1?'Suffisant':'Insuffisant',c:badge(couv,1.2,0.8)},
+    {l:'Annuités / CAF (norme ≤50%)',v:fmtPct(taux_couv_annuites),s:taux_couv_annuites<=50?'Confortable':taux_couv_annuites<=70?'Acceptable':'Trop chargé',c:badge(taux_couv_annuites,0,50,true)},
+    {l:'Rentabilité économique',v:fmtPct(rent_eco),s:'Taux effectif annuel : '+fmtPct(taux_annuel_eff),c:badge(rent_eco,taux_annuel_eff,taux_annuel_eff*0.8)},
+  ];
+
+  // Bloc montant finançable
+  const normes_ko=normes.filter(n=>n.statut==='ko').length;
+  const normes_warn=normes.filter(n=>n.statut==='warn').length;
+  let decision_color=normes_ko===0?'var(--vert)':normes_ko<=2?'#e76f00':'var(--rouge)';
+  let decision_label=normes_ko===0?'FAVORABLE':normes_ko<=2?'FAVORABLE AVEC RÉSERVES':'DÉFAVORABLE';
+
+  const normesHTML=normes.map(n=>{
+    const icon=n.statut==='ok'?'✅':n.statut==='warn'?'⚠️':'❌';
+    const bg=n.statut==='ok'?'var(--vert-clair)':n.statut==='warn'?'#fff8e1':'var(--rouge-clair)';
+    const col=n.statut==='ok'?'var(--vert)':n.statut==='warn'?'#7a4f00':'var(--rouge)';
+    return `<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border-radius:8px;background:${bg};margin-bottom:8px;">
+      <span style="font-size:1rem;margin-top:1px;">${icon}</span>
+      <div>
+        <div style="font-weight:700;font-size:0.8rem;color:${col};">${n.label}</div>
+        <div style="font-size:0.82rem;color:var(--noir);margin-top:2px;">Valeur : <strong>${n.valeur}</strong> — ${n.statut==='ok'?n.ok_txt:n.warn_txt}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const limites_detail=`
+    <div style="font-size:0.78rem;color:var(--gris);margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+      <span>50% BFR : <strong>${fmt(bfr*0.5)}</strong></span>
+      <span>FR/2 : <strong>${fmt(fr/2)}</strong></span>
+      <span>Max CAF (50%) : <strong>${max_caf===Infinity?'—':fmt(max_caf)}</strong></span>
+      <span>Max END : <strong>${max_end===Infinity?'—':fmt(max_end)}</strong></span>
+    </div>`;
+
+  document.getElementById('ratios-grid').innerHTML=`
+    <div style="grid-column:1/-1;background:var(--noir);border-radius:12px;padding:22px;margin-bottom:8px;">
+      <div style="font-size:0.75rem;font-weight:700;color:var(--or);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">MONTANT FINANÇABLE RECOMMANDÉ</div>
+      <div style="font-family:'Playfair Display',serif;font-size:2rem;color:${decision_color};margin-bottom:4px;">${fmt(mf)}</div>
+      <div style="font-size:0.82rem;color:#aaa;">Échéance correspondante : <strong style="color:#fff;">${fmt(ech_mf)}/mois</strong>  |  Décision : <strong style="color:${decision_color};">${decision_label}</strong></div>
+      ${limites_detail}
+      <div style="font-size:0.72rem;color:#666;margin-top:8px;">Montant sollicité : ${fmt(montant_sollicite)} — Montant simulé : ${fmt(v('montant_simule'))}</div>
+    </div>
+    <div style="grid-column:1/-1;">
+      <div style="font-size:0.78rem;font-weight:700;color:var(--bleu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;">VÉRIFICATION DES NORMES (${normes.filter(n=>n.statut==='ok').length}/${normes.length} respectées)</div>
+      ${normesHTML}
+    </div>
+    `+cards.map(c=>`
+    <div class="kpi-card ${c.c}"><div class="kpi-label">${c.l}</div><div class="kpi-value">${c.v}</div><div class="kpi-sub">${c.s}</div></div>`).join('');
+
+  // Stocker pour la synthèse
+  window._analyse={mf,ech_mf,decision_label,normes,normes_ko,normes_warn,
+    taux_couv_annuites,annuite_annuelle,caf_annuel,bfr,fr,end,couv,rent_eco,taux_annuel_eff,
+    liq_gen,liq_red,indice_sec,rotation_jours,autonomie,taux_endet:fp>0?(totalDettes/fp)*100:0,
+    sr,ms,mb,taux_mb,ca,cmv,tn,vnc,fp,totalActif,totalDettes,stocks,creances,dispo};
+}
+
+// ========== ⑪ SYNTHÈSE ==========
+function genererSynthese(){
+  calcAnalyse();
+  const a=window._analyse||{};
+  const nom=document.getElementById('raison_sociale')?.value||'—';
+  const rep=document.getElementById('representant')?.value||'—';
+  const loc=document.getElementById('localisation')?.value||'—';
+  const rang=document.getElementById('rang_credit')?.value||'—';
+  const histo=document.getElementById('historique')?.value||'—';
+  const objet=document.getElementById('objet_credit')?.value||'—';
+  const msollic=v('montant_sollicite'),msimule=v('montant_simule'),duree=v('duree');
+  const ech=getEcheance();
+  const tauxMarge=document.getElementById('taux_marge_global')?.value||'—';
+
+  let cautionsHTML='';
+  document.querySelectorAll('#cautions-list .dyn-row').forEach((row,i)=>{
+    const nom_c=row.querySelectorAll('input')[0]?.value||'—';
+    const eng=parseFloat(row.querySelector('.caut-engage')?.value)||0;
+    const cc=row.querySelector('.caut-cc')?.value||'—';
+    cautionsHTML+=ligne(`Caution ${i+1} — ${nom_c}`,`Engagement : ${fmt(eng)} | CC : ${cc}`);
+  });
+
+  // Avis basé sur normes
+  const nko=a.normes_ko||0;
+  let avisClass=nko===0?'favorable':nko<=2?'reserve':'defavorable';
+  let avisTexte=nko===0
+    ?`Toutes les normes sont respectées. Dossier solide. Couverture échéance : ${a.couv?.toFixed(2)||'—'}x. Avis FAVORABLE sous réserve de vérification terrain.`
+    :nko<=2
+    ?`${nko} norme(s) non respectée(s). Points de vigilance à documenter. Avis FAVORABLE AVEC RÉSERVES — structuration du montant proposé recommandée.`
+    :`${nko} normes non respectées. Risques significatifs identifiés. Revoir le montant, la durée ou renforcer les garanties avant toute décision.`;
+
+  const normesResume=(a.normes||[]).map(n=>{
+    const icon=n.statut==='ok'?'✓':n.statut==='warn'?'⚠':'✗';
+    const col=n.statut==='ok'?'ok':n.statut==='warn'?'warn':'ko';
+    return ligne(`${icon} ${n.label}`,n.valeur,col);
+  }).join('');
+
+  const mfColor=(a.normes_ko||0)===0?'ok':(a.normes_ko||0)<=2?'warn':'ko';
+
+  document.getElementById('synthese-content').innerHTML=`
+    <div class="synthese-bloc">
+      <h3>I. Identification</h3>
+      ${ligne('Raison sociale',nom)}${ligne('Représentant',rep)}${ligne('Localisation',loc)}
+      ${ligne('Rang du crédit',rang+'ème cycle')}${ligne('Historique',histo)}
+    </div>
+    <div class="synthese-bloc" style="margin-top:14px;">
+      <h3>II. Demande de crédit</h3>
+      ${ligne('Objet',objet)}
+      ${ligne('Montant sollicité',fmt(msollic))}
+      ${ligne('Montant simulé (base)',fmt(msimule),'warn')}
+      ${ligne('Durée',duree+' mois')}
+      ${ligne('Échéance (montant simulé)',fmt(ech))}
+    </div>
+    <div class="synthese-bloc" style="margin-top:14px;border:2px solid #c9a84c;">
+      <h3 style="color:var(--or);">★ MONTANT FINANÇABLE PROPOSÉ</h3>
+      ${ligne('Montant proposé',fmt(a.mf||0),mfColor)}
+      ${ligne('Échéance correspondante',fmt(a.ech_mf||0))}
+      ${ligne('Décision',a.decision_label||'—',mfColor)}
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid #2a2a2a;">
+        <div style="font-size:0.72rem;color:#aaa;margin-bottom:6px;">CONTRAINTES APPLIQUÉES</div>
+        ${ligne('50% du BFR (règle 1)',fmt((a.bfr||0)*0.5))}
+        ${ligne('FR ÷ 2 (règle 2)',fmt((a.fr||0)/2))}
+        ${ligne('Annuités ≤ 50% CAF (règle 3)',fmt(a.caf_annuel*0.5||0))}
+        ${ligne('Couverture END (règle 4)',a.couv?.toFixed(2)+'x'||'—')}
+      </div>
+    </div>
+    <div class="synthese-bloc" style="margin-top:14px;">
+      <h3>III. Analyse exploitation</h3>
+      ${ligne('CA mensuel',fmt(a.ca||0))}${ligne('CA annuel estimé',fmt((a.ca||0)*12))}
+      ${ligne('Taux de marge produits',tauxMarge)}
+      ${ligne('Marge brute',fmt(a.mb||0)+' ('+fmtPct(a.taux_mb||0)+')')}
+      ${ligne('END mensuel',fmt(a.end||0),(a.couv||0)>=1?'ok':'warn')}
+      ${ligne('CAF annuelle',fmt(a.caf_annuel||0),(a.caf_annuel||0)>0?'ok':'ko')}
+      ${ligne('Annuités annuelles / CAF',fmtPct(a.taux_couv_annuites||0),(a.taux_couv_annuites||0)<=50?'ok':(a.taux_couv_annuites||0)<=70?'warn':'ko')}
+      ${ligne('Seuil de rentabilité',fmt(a.sr||0))}
+      ${ligne('Marge de sécurité',fmtPct(a.indice_sec||0),(a.indice_sec||0)>20?'ok':'warn')}
+    </div>
+    <div class="synthese-bloc" style="margin-top:14px;">
+      <h3>IV. Analyse bilan</h3>
+      ${ligne('FR',(a.fr||0)>=0?fmt(a.fr||0):'('+fmt(a.fr||0)+')',(a.fr||0)>=0?'ok':'ko')}
+      ${ligne('BFR',fmt(a.bfr||0))}
+      ${ligne('Trésorerie nette',fmt(a.tn||0),(a.tn||0)>=0?'ok':(a.tn||0)>-300000?'warn':'ko')}
+      ${ligne('Liquidité générale',(a.liq_gen||0).toFixed(2),(a.liq_gen||0)>=1.5?'ok':(a.liq_gen||0)>=1?'warn':'ko')}
+      ${ligne('Liquidité réduite',(a.liq_red||0).toFixed(2),(a.liq_red||0)>=1?'ok':(a.liq_red||0)>=0.5?'warn':'ko')}
+      ${ligne('Autonomie financière',fmtPct(a.autonomie||0),(a.autonomie||0)>60?'ok':'warn')}
+      ${ligne('Rotation du stock',Math.round(a.rotation_jours||0)+' jours',(a.rotation_jours||0)<=30?'ok':(a.rotation_jours||0)<=45?'warn':'ko')}
+      ${ligne('Rentabilité éco vs Taux effectif',fmtPct(a.rent_eco||0)+' vs '+fmtPct(a.taux_annuel_eff||0),(a.rent_eco||0)>=(a.taux_annuel_eff||0)?'ok':'ko')}
+      ${ligne('Couverture échéance',(a.couv||0).toFixed(2)+'x',(a.couv||0)>=1.2?'ok':(a.couv||0)>=0.8?'warn':'ko')}
+    </div>
+    <div class="synthese-bloc" style="margin-top:14px;">
+      <h3>V. Garanties</h3>
+      ${cautionsHTML||ligne('Cautions','Aucune saisie')}
+      ${ligne('Total engagement cautions',document.getElementById('total_engage_cautions')?.value||'—')}
+      ${ligne('Couverture cautions / échéance',document.getElementById('couv_cautions')?.value||'—')}
+    </div>
+    <div class="synthese-bloc" style="margin-top:14px;">
+      <h3>VI. Vérification des normes (${(a.normes||[]).filter(n=>n.statut==='ok').length}/${(a.normes||[]).length} respectées)</h3>
+      ${normesResume}
+    </div>
+    <div class="avis-box ${avisClass}" style="margin-top:18px;"><strong>AVIS DU CHARGÉ DE CRÉDIT</strong><br>${avisTexte}</div>
+    <p style="margin-top:14px;font-size:0.76rem;color:var(--gris);text-align:right;">Généré le ${new Date().toLocaleDateString('fr-FR')} — Chargé de crédit : Sylvanus BABA</p>`;
+}
+
+function ligne(label,val,cls){
+  return`<div class="synthese-ligne"><span class="label">${label}</span><span class="val ${cls||''}">${val}</span></div>`;
+}
+
+// Init — ajouter une caution et un produit par défaut au démarrage
+
+// ========== SAUVEGARDE / CHARGEMENT DOSSIER ==========
+
+function sauvegarderDossier(){
+  // Collecte tous les champs simples (input, select)
+  const data = {};
+
+  // Champs simples par ID
+  const ids = [
+    'raison_sociale','representant','cip','type_piece','localisation','anciennete',
+    'matrimonial','enfants','autres_charges_nb','experience','secteur','date_client',
+    'rang_credit','historique','objet_credit','montant_sollicite','montant_simule',
+    'duree','taux_mensuel','taux_commission','type_credit','nb_echeances',
+    'ca_veille','ca_j3','ca_jour','jours_mois',
+    'ca','cmv','services','loyer','impots','salaires','interets_paye','autres_charges_exp',
+    'depenses_menage','autres_revenus',
+    'petits_outils',
+    'stocks','creances','dispo','autres_actifs','dettes_fourn','dettes_fin','autres_dettes',
+    'garanties_reelles','valeur_garanties','fonds_garantie','autres_garanties',
+    'age_client',
+    'num_dossier','agence','date_comite','nom_charge',
+    'risque_1','mitigant_1','risque_2','mitigant_2','risque_3','mitigant_3','niveau_risque'
+  ];
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if(el) data[id] = el.value;
+  });
+
+  // Champs textarea (non couverts par getElementById simple)
+  ['contexte_demande','logique_economique','verification_chiffres',
+   'conditions_particulieres','conclusion_comite'].forEach(id => {
+    const el = document.getElementById(id);
+    if(el) data[id] = el.value;
+  });
+
+  // Produits dynamiques
+  data._produits = [];
+  document.querySelectorAll('#produits-list .dyn-row').forEach(row => {
+    const inputs = row.querySelectorAll('input');
+    data._produits.push({
+      nom: inputs[0]?.value||'',
+      pa:  inputs[1]?.value||'',
+      pv:  inputs[2]?.value||''
+    });
+  });
+
+  // Immobilisations dynamiques
+  data._immos = [];
+  document.querySelectorAll('#immos-list .dyn-row').forEach(row => {
+    const inputs = row.querySelectorAll('input');
+    data._immos.push({
+      nom:    inputs[0]?.value||'',
+      prix:   inputs[1]?.value||'',
+      duree:  inputs[2]?.value||'',
+      age:    inputs[3]?.value||''
+    });
+  });
+
+  // Cautions dynamiques
+  data._cautions = [];
+  document.querySelectorAll('#cautions-list .dyn-row').forEach(row => {
+    const inputs = row.querySelectorAll('input');
+    data._cautions.push({
+      nom:     inputs[0]?.value||'',
+      prof:    inputs[1]?.value||'',
+      lieu:    inputs[2]?.value||'',
+      revenu:  inputs[3]?.value||'',
+      engage:  inputs[4]?.value||''
+    });
+  });
+
+  // Nom du fichier basé sur le client et la date
+  const nomClient = (data.raison_sociale||'dossier').replace(/\s+/g,'_').substring(0,30);
+  const dateStr = new Date().toLocaleDateString('fr-FR').replace(/\//g,'-');
+  const filename = `Dossier_${nomClient}_${dateStr}.json`;
+
+  // Téléchargement
+  const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+
+  // Confirmation visuelle
+  try{ const btn = document.querySelector('button[onclick="sauvegarderDossier()"]'); if(btn){ const orig=btn.textContent; btn.textContent='✓ Sauvegardé'; setTimeout(()=>btn.textContent=orig, 2000); } }catch(e){}
+}
+
+function chargerDossier(event){
+  const file = event.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e){
+    try{
+      const data = JSON.parse(e.target.result);
+
+      // Remplir les champs simples
+      Object.keys(data).forEach(id => {
+        if(id.startsWith('_')) return; // ignorer les tableaux
+        const el = document.getElementById(id);
+        if(el) el.value = data[id];
+      });
+
+      // Recharger les textarea narratifs
+      ['contexte_demande','logique_economique','verification_chiffres',
+       'conditions_particulieres','conclusion_comite'].forEach(id => {
+        const el = document.getElementById(id);
+        if(el && data[id] !== undefined) el.value = data[id];
+      });
+
+      // Recharger les produits
+      document.getElementById('produits-list').innerHTML = '';
+      produits = [];
+      (data._produits||[]).forEach(p => {
+        ajouterProduit();
+        const rows = document.querySelectorAll('#produits-list .dyn-row');
+        const row = rows[rows.length-1];
+        const inputs = row.querySelectorAll('input');
+        inputs[0].value = p.nom||'';
+        inputs[1].value = p.pa||'';
+        inputs[2].value = p.pv||'';
+      });
+
+      // Recharger les immobilisations
+      document.getElementById('immos-list').innerHTML = '';
+      immos = [];
+      (data._immos||[]).forEach(im => {
+        ajouterImmo();
+        const rows = document.querySelectorAll('#immos-list .dyn-row');
+        const row = rows[rows.length-1];
+        const inputs = row.querySelectorAll('input');
+        inputs[0].value = im.nom||'';
+        inputs[1].value = im.prix||'';
+        inputs[2].value = im.duree||'';
+        inputs[3].value = im.age||'';
+      });
+
+      // Recharger les cautions
+      document.getElementById('cautions-list').innerHTML = '';
+      cautions = [];
+      (data._cautions||[]).forEach(c => {
+        ajouterCaution();
+        const rows = document.querySelectorAll('#cautions-list .dyn-row');
+        const row = rows[rows.length-1];
+        const inputs = row.querySelectorAll('input');
+        inputs[0].value = c.nom||'';
+        inputs[1].value = c.prof||'';
+        inputs[2].value = c.lieu||'';
+        inputs[3].value = c.revenu||'';
+        inputs[4].value = c.engage||'';
+      });
+
+      // Recalculer tout
+      onTypeCredit();
+      calcCAterrain();
+      calcProduits();
+      calcImmos();
+      calcBilan();
+      calcExploitation();
+      calcGaranties();
+      calcDemande();
+
+      // Réinitialiser l'input file
+      event.target.value = '';
+
+      alert('Dossier chargé avec succès : ' + (data.raison_sociale||file.name));
+    } catch(err){
+      alert('Erreur lors du chargement : fichier invalide ou corrompu.');
+      console.error(err);
+    }
+  };
+  reader.readAsText(file);
+}
+
+// ========== PANNEAU DOSSIERS & NOTIF ==========
+window.ouvrirPanneauDossiers = function() {
+  document.getElementById('dossiers-overlay').style.display='flex';
+  if(typeof window.chargerListeDossiers === 'function') window.chargerListeDossiers();
+};
+window.fermerPanneauDossiers = function() {
+  document.getElementById('dossiers-overlay').style.display='none';
+};
+window._showNotif = function(msg, type) {
+  const el=document.getElementById('notif-bar');
+  if(!el) return;
+  const colors={vert:'background:#2d6a4f;color:#fff',rouge:'background:#c1121f;color:#fff',bleu:'background:#1d3557;color:#fff',or:'background:#c9a84c;color:#0d0d0d'};
+  el.style.cssText=(colors[type]||colors.bleu)+';display:block;padding:10px 24px;border-radius:30px;font-size:0.85rem;font-weight:600;z-index:2000;box-shadow:0 4px 16px rgba(0,0,0,0.2);font-family:DM Sans,sans-serif;position:fixed;bottom:24px;left:50%;transform:translateX(-50%)';
+  el.textContent=msg;
+  setTimeout(()=>el.style.display='none', 3000);
+};
+
+window.onload=()=>{
+  const dh=document.getElementById('date-header');
+  if(dh)dh.textContent=new Date().toLocaleDateString('fr-FR',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
+  ajouterCaution();ajouterProduit();ajouterImmo();
+};
+
+
+// ========== EXPORT WORD (XML pur via JSZip) ==========
+async function exporterWord(){
+  const btn=document.getElementById('btn-word');
+  btn.textContent='Generation...';btn.disabled=true;
+  try{
+    if(typeof JSZip==='undefined'){
+      alert('JSZip non disponible. Verifie ta connexion internet et recharge la page.');
+      btn.textContent='Telecharger Word (.docx)';btn.disabled=false;return;
+    }
+
+    // ---- COLLECTE DES DONNEES ----
+    const nom=document.getElementById('raison_sociale')?.value||'';
+    const rep=document.getElementById('representant')?.value||'';
+    const cip=document.getElementById('cip')?.value||'';
+    const loc=document.getElementById('localisation')?.value||'';
+    const anciennete=document.getElementById('anciennete')?.value||'';
+    const matrimonial=document.getElementById('matrimonial')?.value||'';
+    const enfants=document.getElementById('enfants')?.value||'0';
+    const experience=document.getElementById('experience')?.value||'';
+    const secteur=document.getElementById('secteur')?.value||'';
+    const rang=document.getElementById('rang_credit')?.value||'';
+    const histo=document.getElementById('historique')?.value||'';
+    const objet=document.getElementById('objet_credit')?.value||'';
+    const msollic=v('montant_sollicite'),msimule=v('montant_simule'),duree=v('duree'),taux=v('taux_mensuel');
+    const ca=v('ca'),cmv=v('cmv'),mb=ca-cmv;
+    const dotAmortRaw=document.getElementById('amort_mensuel_expl')?.value||'0';
+    const dotAmort=parseFloat(dotAmortRaw.replace(/[^0-9.-]/g,''))||0;
+    const cf=v('services')+v('loyer')+v('impots')+v('salaires')+dotAmort+v('interets_paye')+v('autres_charges_exp');
+    const end=mb-cf;
+    const taux_mb=ca>0?(mb/ca)*100:0;
+    const stocks=v('stocks'),creances=v('creances'),dispo=v('dispo');
+    const vncRaw=document.getElementById('immos_bilan')?.value||'0';
+    const vnc=parseFloat(vncRaw.replace(/[^0-9.-]/g,''))||0;
+    const totalActif=stocks+creances+vnc+dispo+v('autres_actifs');
+    const totalDettes=v('dettes_fourn')+v('dettes_fin')+v('autres_dettes');
+    const fp=totalActif-totalDettes;
+    const fr=fp-vnc,bfr=stocks+creances-v('dettes_fourn'),tn=fr-bfr;
+    const sr=taux_mb>0?cf/(taux_mb/100):0;
+    const ms=ca-sr,indice_sec=ca>0?(ms/ca)*100:0;
+    const autonomie=totalActif>0?(fp/totalActif)*100:0;
+    const taux_endet=fp>0?(totalDettes/fp)*100:0;
+    const rotation=ca>0?(stocks/ca)*30:0;
+    const ech=getEcheance();
+    const couv=ech>0?end/ech:0;
+    const caVeille=v('ca_veille'),caJ3=v('ca_j3'),caJour=v('ca_jour'),joursMois=v('jours_mois');
+    const caMoyJour=document.getElementById('ca_moy_jour')?.value||'';
+    const tmGlobal=document.getElementById('taux_marge_global')?.value||'';
+    const dateAujourd=new Date().toLocaleDateString('fr-FR');
+
+    // ---- CHAMPS COMITÉ ----
+    const age_client=document.getElementById('age_client')?.value||'';
+    const num_dossier=document.getElementById('num_dossier')?.value||'';
+    const agence=document.getElementById('agence')?.value||'';
+    const date_comite=document.getElementById('date_comite')?.value||'';
+    const nom_charge=document.getElementById('nom_charge')?.value||'Sylvanus BABA';
+    const contexte_demande=document.getElementById('contexte_demande')?.value||'';
+    const logique_economique=document.getElementById('logique_economique')?.value||'';
+    const verification_chiffres=document.getElementById('verification_chiffres')?.value||'';
+    const risque_1=document.getElementById('risque_1')?.value||'';
+    const mitigant_1=document.getElementById('mitigant_1')?.value||'';
+    const risque_2=document.getElementById('risque_2')?.value||'';
+    const mitigant_2=document.getElementById('mitigant_2')?.value||'';
+    const risque_3=document.getElementById('risque_3')?.value||'';
+    const mitigant_3=document.getElementById('mitigant_3')?.value||'';
+    const niveau_risque=document.getElementById('niveau_risque')?.value||'modéré, bien couvert';
+    const conditions_particulieres=document.getElementById('conditions_particulieres')?.value||'';
+    const conclusion_comite=document.getElementById('conclusion_comite')?.value||'';
+    // Formater la date du comité
+    const date_comite_fmt=date_comite?new Date(date_comite).toLocaleDateString('fr-FR'):dateAujourd;
+
+    const _nko=(window._analyse?.normes_ko)||0;
+    let avisTexte='';
+    if(_nko===0){
+      avisTexte='AVIS FAVORABLE - Toutes les normes sont respectees. Capacite de remboursement averee. Sous reserve de verification terrain.';
+    } else if(_nko<=2){
+      avisTexte='AVIS FAVORABLE AVEC RESERVES - '+_nko+' norme(s) non respectee(s). Points de vigilance documentes. Structuration du montant propose recommandee.';
+    } else {
+      avisTexte='AVIS DEFAVORABLE - '+_nko+' normes non respectees. Risques significatifs identifies. Revoir le montant, la duree ou renforcer les garanties avant toute decision.';
+    }
+
+    // Cautions
+    let cautionsArr=[];
+    document.querySelectorAll('#cautions-list .dyn-row').forEach(row=>{
+      const inputs=row.querySelectorAll('input');
+      cautionsArr.push({
+        nom:inputs[0]?.value||'',prof:inputs[1]?.value||'',lieu:inputs[2]?.value||'',
+        revenu:parseFloat(inputs[3]?.value)||0,
+        engage:parseFloat(inputs[4]?.value)||0,
+        cc:row.querySelector('.caut-cc')?.value||''
+      });
+    });
+
+    // Produits
+    let produitsArr=[];
+    document.querySelectorAll('#produits-list .dyn-row').forEach(row=>{
+      const inputs=row.querySelectorAll('input');
+      const pa=parseFloat(inputs[1]?.value)||0,pv=parseFloat(inputs[2]?.value)||0;
+      const tm=pv>0?((pv-pa)/pv)*100:0;
+      if(inputs[0]?.value) produitsArr.push({nom:inputs[0].value,pa,pv,tm});
+    });
+
+    // ---- HELPERS XML ----
+    function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+    function run(txt,opts={}){
+      let rpr='';
+      if(opts.bold) rpr+='<w:b/>';
+      if(opts.size) rpr+=`<w:sz w:val="${opts.size*2}"/><w:szCs w:val="${opts.size*2}"/>`;
+      if(opts.color) rpr+=`<w:color w:val="${opts.color}"/>`;
+      if(opts.font) rpr+=`<w:rFonts w:ascii="${opts.font}" w:hAnsi="${opts.font}"/>`;
+      return `<w:r>${rpr?'<w:rPr>'+rpr+'</w:rPr>':''}<w:t xml:space="preserve">${esc(txt)}</w:t></w:r>`;
+    }
+    function para(content,opts={}){
+      let ppr='';
+      if(opts.spacing) ppr+=`<w:spacing w:before="${opts.spacing.before||0}" w:after="${opts.spacing.after||0}"/>`;
+      if(opts.align) ppr+=`<w:jc w:val="${opts.align}"/>`;
+      if(opts.border) ppr+=`<w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="${opts.border}"/></w:pBdr>`;
+      if(opts.shading) ppr+=`<w:shd w:val="clear" w:color="auto" w:fill="${opts.shading}"/>`;
+      return `<w:p>${ppr?'<w:pPr>'+ppr+'</w:pPr>':''}${content}</w:p>`;
+    }
+    function titre_section(txt){
+      return para(run(txt,{bold:true,size:13,color:'1D3557',font:'Arial'}),{spacing:{before:240,after:80},border:'C9A84C'});
+    }
+    function ligne_info(label,val){
+      const lRun=run(label+' : ',{bold:true,size:10,color:'555555',font:'Arial'});
+      const vRun=run(val,{size:10,font:'Arial'});
+      return para(lRun+vRun,{spacing:{before:30,after:30}});
+    }
+    function cell(txt,opts={}){
+      const fill=opts.fill||'FFFFFF';
+      const bold=opts.bold||false;
+      const color=opts.color||'000000';
+      const align=opts.align||'left';
+      return `<w:tc>
+        <w:tcPr>
+          <w:tcW w:w="${opts.w||2000}" w:type="dxa"/>
+          <w:shd w:val="clear" w:color="auto" w:fill="${fill}"/>
+          <w:tcMar><w:top w:w="80" w:type="dxa"/><w:bottom w:w="80" w:type="dxa"/><w:left w:w="120" w:type="dxa"/><w:right w:w="120" w:type="dxa"/></w:tcMar>
+        </w:tcPr>
+        ${para(run(txt,{bold,size:9,color,font:'Arial'}),{align})}
+      </w:tc>`;
+    }
+    function row_table(cells){ return `<w:tr>${cells}</w:tr>`; }
+    function header_row(labels,widths,fill='1D3557'){
+      return row_table(labels.map((l,i)=>cell(l,{w:widths[i],fill,bold:true,color:'FFFFFF',align:'center'})).join(''));
+    }
+    function data_row(vals,widths,fill='FFFFFF'){
+      return row_table(vals.map((val,i)=>cell(val,{w:widths[i],fill,align:i===0?'left':'right'})).join(''));
+    }
+    function table(rows,widths){
+      const total=widths.reduce((a,b)=>a+b,0);
+      const colDefs=widths.map(w=>`<w:gridCol w:w="${w}"/>`).join('');
+      return `<w:tbl>
+        <w:tblPr>
+          <w:tblW w:w="${total}" w:type="dxa"/>
+          <w:tblBorders>
+            <w:top w:val="single" w:sz="4" w:color="CCCCCC"/>
+            <w:left w:val="single" w:sz="4" w:color="CCCCCC"/>
+            <w:bottom w:val="single" w:sz="4" w:color="CCCCCC"/>
+            <w:right w:val="single" w:sz="4" w:color="CCCCCC"/>
+            <w:insideH w:val="single" w:sz="4" w:color="CCCCCC"/>
+            <w:insideV w:val="single" w:sz="4" w:color="CCCCCC"/>
+          </w:tblBorders>
+        </w:tblPr>
+        <w:tblGrid>${colDefs}</w:tblGrid>
+        ${rows}
+      </w:tbl>`;
+    }
+    function table2col(lignes){
+      const W1=4200,W2=4760;
+      const rows=lignes.map((l,i)=>row_table(
+        cell(l[0],{w:W1,fill:i%2===0?'F0EDE8':'FFFFFF',bold:true,color:'444444'})+
+        cell(l[1],{w:W2,fill:i%2===0?'FAFAF8':'FFFFFF'})
+      )).join('');
+      return table(rows,[W1,W2]);
+    }
+    function espacer(){return para('',{spacing:{before:80,after:80}});}
+
+    // ---- CONSTRUCTION DU DOCUMENT ----
+    let body='';
+
+    // Titre principal
+    body+=para(run('PRESENTATION AU COMITE DE CREDIT',{bold:true,size:18,color:'1D3557',font:'Arial'}),{align:'center',spacing:{before:0,after:40}});
+    body+=para(run((num_dossier?'Dossier N° '+num_dossier+' — ':'')+' Séance du '+date_comite_fmt,{size:10,color:'888888',font:'Arial',italic:true}),{align:'center',spacing:{before:0,after:60}});
+    body+=para(run('Mesdames et Messieurs les membres du comité,',{bold:true,size:11,font:'Arial'}),{spacing:{before:0,after:160}});
+
+    // I. IDENTIFICATION
+    body+=titre_section('I. IDENTIFICATION DE L\'EMPRUNTEUR');
+    body+=table2col([
+      ['Raison sociale / Nom',nom],['Representant legal',rep],
+      ['N° piece d\'identite',cip],['Age',age_client?age_client+' ans':''],
+      ['Localisation',loc],['Anciennete sur place',anciennete+' ans'],
+      ['Situation matrimoniale',matrimonial],['Personnes a charge',enfants+' enfants'],
+      ['Experience professionnelle',experience+' ans'],['Secteur d\'activite',secteur],
+      ['Rang du credit',rang+'eme cycle'],['Historique de remboursement',histo]
+    ]);
+    body+=espacer();
+
+    // II. DEMANDE
+    body+=titre_section('II. CARACTERISTIQUES DE LA DEMANDE');
+    body+=table2col([
+      ['Objet du credit',objet],
+      ['Montant sollicite',fmt(msollic)],
+      ['Montant simule (base d\'analyse)',fmt(msimule)],
+      ['Duree',duree+' mois'],['Taux mensuel',taux+' %'],
+      ['Echeance mensuelle calculee',fmt(ech)]
+    ]);
+    body+=espacer();
+
+    // III. CA TERRAIN
+    body+=titre_section('III. RELEVE DU CHIFFRE D\'AFFAIRES TERRAIN');
+    body+=table2col([
+      ['CA veille de l\'entretien',fmt(caVeille)],
+      ['CA il y a 3 jours',fmt(caJ3)],
+      ['CA jour de l\'entretien',fmt(caJour)],
+      ['CA journalier moyen',caMoyJour],
+      ['Jours travailles dans le mois',joursMois+' jours'],
+      ['CA mensuel retenu',fmt(ca)]
+    ]);
+    body+=espacer();
+
+    // IV. PRODUITS
+    if(produitsArr.length>0){
+      body+=titre_section('IV. PRODUITS VENDUS ET MARGES');
+      const wP=[3000,2000,2000,1960];
+      body+=table(
+        header_row(['Produit','Prix achat (FCFA)','Prix vente (FCFA)','Taux marge'],wP)+
+        produitsArr.map((pr,i)=>data_row([pr.nom,pr.pa.toLocaleString('fr-FR'),pr.pv.toLocaleString('fr-FR'),fmtPct(pr.tm)],wP,i%2===0?'F5F2ED':'FFFFFF')).join(''),
+        wP
+      );
+      body+=para(run('Taux de marge moyen global : '+tmGlobal,{bold:true,size:10,font:'Arial'}),{spacing:{before:80,after:60}});
+      body+=espacer();
+    }
+
+    // V. EXPLOITATION
+    body+=titre_section('V. ANALYSE DE L\'EXPLOITATION (MENSUEL)');
+    const wE=[5500,3460];
+    body+=table(
+      header_row(['Rubrique','Montant (FCFA)'],wE)+
+      data_row(['Chiffre d\'Affaires mensuel',fmt(ca)],wE,'E8F4E8')+
+      data_row(['Cout des Marchandises Vendues (CMV)',fmt(cmv)],wE,'FFFFFF')+
+      data_row(['MARGE BRUTE ('+fmtPct(taux_mb)+')',fmt(mb)],wE,'D8F3DC')+
+      data_row(['Services consommes',fmt(v('services'))],wE,'FFFFFF')+
+      data_row(['Loyer',fmt(v('loyer'))],wE,'F5F2ED')+
+      data_row(['Impots et taxes',fmt(v('impots'))],wE,'FFFFFF')+
+      data_row(['Salaires / Main d\'oeuvre',fmt(v('salaires'))],wE,'F5F2ED')+
+      data_row(['Dotation amortissements',fmt(dotAmort)],wE,'FFFFFF')+
+      data_row(['Depenses financieres (interets)',fmt(v('interets_paye'))],wE,'F5F2ED')+
+      data_row(['Autres charges',fmt(v('autres_charges_exp'))],wE,'FFFFFF')+
+      data_row(['TOTAL CHARGES',fmt(cf)],wE,'FFE0E0')+
+      data_row(['EXCEDENT NET DISPONIBLE (END)',fmt(end)],wE,'D8F3DC'),
+      wE
+    );
+    body+=espacer();
+
+    // VI. BILAN
+    body+=titre_section('VI. BILAN SIMPLIFIE');
+    const wB=[4480,4480];
+    body+=table(
+      row_table(
+        cell('ACTIF',{w:4480,fill:'2D6A4F',bold:true,color:'FFFFFF',align:'center'})+
+        cell('PASSIF',{w:4480,fill:'C1121F',bold:true,color:'FFFFFF',align:'center'})
+      )+
+      row_table(
+        `<w:tc><w:tcPr><w:tcW w:w="4480" w:type="dxa"/><w:tcMar><w:top w:w="80" w:type="dxa"/><w:bottom w:w="80" w:type="dxa"/><w:left w:w="120" w:type="dxa"/><w:right w:w="120" w:type="dxa"/></w:tcMar></w:tcPr>
+          ${para(run('Stocks : '+fmt(stocks),{size:9,font:'Arial'}),{spacing:{before:20,after:20}})}
+          ${para(run('Creances clients : '+fmt(creances),{size:9,font:'Arial'}),{spacing:{before:20,after:20}})}
+          ${para(run('Immobilisations (VNC) : '+fmt(vnc),{size:9,font:'Arial'}),{spacing:{before:20,after:20}})}
+          ${para(run('Disponibilites : '+fmt(dispo),{size:9,font:'Arial'}),{spacing:{before:20,after:20}})}
+          ${para(run('TOTAL ACTIF : '+fmt(totalActif),{bold:true,size:9,font:'Arial'}),{spacing:{before:20,after:20}})}
+        </w:tc>`+
+        `<w:tc><w:tcPr><w:tcW w:w="4480" w:type="dxa"/><w:tcMar><w:top w:w="80" w:type="dxa"/><w:bottom w:w="80" w:type="dxa"/><w:left w:w="120" w:type="dxa"/><w:right w:w="120" w:type="dxa"/></w:tcMar></w:tcPr>
+          ${para(run('Dettes fournisseurs : '+fmt(v('dettes_fourn')),{size:9,font:'Arial'}),{spacing:{before:20,after:20}})}
+          ${para(run('Dettes financieres : '+fmt(v('dettes_fin')),{size:9,font:'Arial'}),{spacing:{before:20,after:20}})}
+          ${para(run('Autres dettes : '+fmt(v('autres_dettes')),{size:9,font:'Arial'}),{spacing:{before:20,after:20}})}
+          ${para(run('Total dettes : '+fmt(totalDettes),{size:9,font:'Arial'}),{spacing:{before:20,after:20}})}
+          ${para(run('Fonds propres : '+fmt(fp),{bold:true,size:9,font:'Arial'}),{spacing:{before:20,after:20}})}
+          ${para(run('TOTAL PASSIF : '+fmt(totalActif),{bold:true,size:9,font:'Arial'}),{spacing:{before:20,after:20}})}
+        </w:tc>`
+      ),
+      wB
+    );
+    body+=espacer();
+
+    // VII. RATIOS
+    body+=titre_section('VII. INDICATEURS FINANCIERS ET RATIOS');
+    body+=table2col([
+      ['Taux de marge brute',fmtPct(taux_mb)],
+      ['Seuil de rentabilite mensuel',fmt(sr)],
+      ['Marge de securite',fmtPct(indice_sec)+' — '+fmt(ms)],
+      ['Fonds de Roulement (FR)',fmt(fr)],
+      ['Besoin en Fonds de Roulement (BFR)',fmt(bfr)],
+      ['Tresorerie Nette (TN)',fmt(tn)],
+      ['Autonomie financiere',fmtPct(autonomie)],
+      ['Taux d\'endettement',fmtPct(taux_endet)],
+      ['Rotation du stock',Math.round(rotation)+' jours'],
+      ['CAF mensuelle (END)',fmt(end)],
+      ['CAF annuelle',fmt(end*12)],
+      ['Couverture echeance (END/Ech.)',couv.toFixed(2)+'x'],
+    ]);
+    body+=espacer();
+
+    // VIII. GARANTIES
+    body+=titre_section('VIII. GARANTIES ET SURETES');
+    if(cautionsArr.length>0){
+      const wC=[2200,1400,1400,1300,1300,760];
+      body+=table(
+        header_row(['Nom','Profession','Lieu','Revenu/mois','Engagement/mois','CC'],wC)+
+        cautionsArr.map((c,i)=>data_row([c.nom,c.prof,c.lieu,fmt(c.revenu),fmt(c.engage),c.cc],wC,i%2===0?'F5F2ED':'FFFFFF')).join(''),
+        wC
+      );
+    }
+    body+=table2col([
+      ['Total engagements cautions',document.getElementById('total_engage_cautions')?.value||''],
+      ['Couverture cautions / echeance',document.getElementById('couv_cautions')?.value||''],
+      ['Garanties reelles',document.getElementById('garanties_reelles')?.value||'Neant'],
+      ['Valeur garanties reelles',fmt(v('valeur_garanties'))],
+      ['Fonds de garantie',fmt(v('fonds_garantie'))],
+      ['Autres suretes',document.getElementById('autres_garanties')?.value||'Neant'],
+    ]);
+    body+=espacer();
+
+    // IX. MONTANT FINANCABLE
+    const ana=window._analyse||{};
+    const mf=ana.mf||0;
+    const ech_mf=ana.ech_mf||0;
+    const decision_label=ana.decision_label||'—';
+    const nko=ana.normes_ko||0;
+    const fillDecision=nko===0?'D8F3DC':nko<=2?'FFF3CD':'FFE0E0';
+    const colorDecision=nko===0?'2D6A4F':nko<=2?'7A4F00':'C1121F';
+
+    body+=titre_section('IX. MONTANT FINANCABLE PROPOSE');
+    body+=table(
+      row_table(
+        cell('MONTANT PROPOSE',{w:4700,fill:'0D0D0D',bold:true,color:'C9A84C',align:'center'})+
+        cell(fmt(mf),{w:4260,fill:'0D0D0D',bold:true,color:nko===0?'74C69D':nko<=2?'F4A261':'E63946',align:'right'})
+      )+
+      data_row(['Echeance mensuelle correspondante',fmt(ech_mf)],[4700,4260],'F5F2ED')+
+      data_row(['Decision','  '+decision_label],[4700,4260],fillDecision)+
+      data_row(['Montant sollicite par le client',fmt(v('montant_sollicite'))],[4700,4260],'FFFFFF')+
+      data_row(['Montant simule (base d\'analyse)',fmt(v('montant_simule'))],[4700,4260],'F5F2ED'),
+      [4700,4260]
+    );
+    body+=espacer();
+
+    // Détail des 4 règles
+    body+=para(run('Regles de plafonnement appliquees :',{bold:true,size:10,color:'1D3557',font:'Arial'}),{spacing:{before:100,after:60}});
+    body+=table2col([
+      ['Regle 1 — 50% du BFR (max finançable)',fmt((ana.bfr||0)*0.5)],
+      ['Regle 2 — FR divise par 2 (FR = '+fmt(ana.fr||0)+')',fmt((ana.fr||0)/2)],
+      ['Regle 3 — Annuites <= 50% CAF (CAF annuelle = '+fmt(ana.caf_annuel||0)+')',fmt((ana.caf_annuel||0)*0.5/12*v('duree')>0?(ana.caf_annuel||0)*0.5/12*v('duree'):0)],
+      ['Regle 4 — END couvre l\'echeance (END mensuel = '+fmt(ana.end||0)+')',fmt(ana.end||0)+'/mois'],
+      ['MONTANT RETENU (minimum des 4 regles, plafonne au sollicite)',fmt(mf)],
+    ]);
+    body+=espacer();
+
+    // X. VERIFICATION DES NORMES
+    const normes=ana.normes||[];
+    const nbOk=normes.filter(n=>n.statut==='ok').length;
+    body+=titre_section(`X. VERIFICATION DES NORMES (${nbOk}/${normes.length} respectees)`);
+    if(normes.length>0){
+      const wN=[300,4200,2460];
+      body+=table(
+        header_row(['','Norme','Valeur / Observation'],wN)+
+        normes.map((n,i)=>{
+          const icon=n.statut==='ok'?'OK':n.statut==='warn'?'!':'KO';
+          const fillN=n.statut==='ok'?'D8F3DC':n.statut==='warn'?'FFF3CD':'FFE0E0';
+          const colN=n.statut==='ok'?'2D6A4F':n.statut==='warn'?'7A4F00':'C1121F';
+          return row_table(
+            cell(icon,{w:300,fill:fillN,bold:true,color:colN,align:'center'})+
+            cell(n.label,{w:4200,fill:i%2===0?'F5F2ED':'FFFFFF'})+
+            cell(n.valeur+' — '+(n.statut==='ok'?n.ok_txt:n.warn_txt),{w:2460,fill:i%2===0?'F5F2ED':'FFFFFF',color:'555555'})
+          );
+        }).join(''),
+        wN
+      );
+    }
+    body+=espacer();
+
+    // XI. CONTEXTE DE LA DEMANDE
+    body+=titre_section(`II. CE QU'IL/ELLE DEMANDE`);
+    body+=table2col([
+      ['Montant sollicite',fmt(msollic)],
+      ['Duree',duree+' mois'],
+      ['Type de credit',document.getElementById('type_credit')?.value||''],
+      ['Objet du credit',objet],
+    ]);
+    if(contexte_demande){
+      body+=espacer();
+      body+=para(run(contexte_demande,{size:10,font:'Arial'}),{spacing:{before:40,after:40}});
+    }
+    body+=espacer();
+
+    // XII. LOGIQUE ÉCONOMIQUE
+    body+=titre_section("III. LA LOGIQUE ECONOMIQUE");
+    body+=para(run(logique_economique||'[Non renseigne]',{size:10,font:'Arial'}),{spacing:{before:40,after:40}});
+    body+=espacer();
+
+    // XIII. VÉRIFICATION DES CHIFFRES (ajout à la section exploitation)
+    if(verification_chiffres){
+      body+=para(run("Verification des chiffres : ",{bold:true,size:10,color:"555555",font:"Arial"}),{spacing:{before:60,after:20}});
+      body+=para(run(verification_chiffres,{size:10,font:'Arial',italic:true}),{spacing:{before:0,after:40}});
+      body+=espacer();
+    }
+
+    // XIV. RISQUES
+    body+=titre_section("VII. LES RISQUES");
+    body+=para(run("Je vais etre franc avec le comite.",{bold:true,size:10,font:'Arial'}),{spacing:{before:40,after:80}});
+    if(risque_1){
+      body+=para(run('Premier risque : '+risque_1,{size:10,font:'Arial'}),{spacing:{before:40,after:20}});
+      body+=para(run('Mitigant : '+mitigant_1,{size:10,font:'Arial',italic:true,color:'555555'}),{spacing:{before:0,after:60}});
+    }
+    if(risque_2){
+      body+=para(run('Deuxieme risque : '+risque_2,{size:10,font:'Arial'}),{spacing:{before:40,after:20}});
+      body+=para(run('Mitigant : '+mitigant_2,{size:10,font:'Arial',italic:true,color:'555555'}),{spacing:{before:0,after:60}});
+    }
+    if(risque_3){
+      body+=para(run('Troisieme risque : '+risque_3,{size:10,font:'Arial'}),{spacing:{before:40,after:20}});
+      body+=para(run('Mitigant : '+mitigant_3,{size:10,font:'Arial',italic:true,color:'555555'}),{spacing:{before:0,after:60}});
+    }
+    body+=para(run('Globalement : dossier a risque '+niveau_risque+'.',{bold:true,size:10,font:'Arial'}),{spacing:{before:40,after:40}});
+    body+=espacer();
+
+    // XV. RECOMMANDATION
+    body+=titre_section("VIII. MA RECOMMANDATION");
+    body+=table2col([
+      ['Montant accorde',fmt(ana.mf||0)],
+      ['Duree',duree+' mois'],
+      ['Echeance totale client',fmt(ana.ech_mf||0)+'/mois'],
+      ['Decision',ana.decision_label||''],
+    ]);
+    if(conditions_particulieres){
+      body+=espacer();
+      body+=para(run("Conditions particulieres : ",{bold:true,size:10,color:"555555",font:"Arial"}),{spacing:{before:60,after:20}});
+      body+=para(run(conditions_particulieres,{size:10,font:'Arial'}),{spacing:{before:0,after:40}});
+    }
+    body+=espacer();
+    body+=para(run(conclusion_comite||avisTexte,{bold:true,size:11,font:'Arial'}),{spacing:{before:80,after:160},shading:fillDecision});
+    body+=espacer();
+    body+=para(run("Presente par : "+(nom_charge||"___________________________")+"  |  "+(agence||"Agence")+"  |  "+date_comite_fmt,{size:9,color:'888888',font:'Arial',italic:true}),{align:'center',spacing:{before:80,after:80}});
+    body+=espacer();
+    body+=para(run('Signature du Charge de Credit : ___________________________',{size:10,font:'Arial'}),{spacing:{before:160,after:60}});
+    body+=para(run('Visa du Superviseur : ___________________________',{size:10,font:'Arial'}),{spacing:{before:60,after:60}});
+    body+=para(run('Decision du Comite : ___________________________',{size:10,font:'Arial'}),{spacing:{before:60,after:60}});
+
+    // ---- ASSEMBLAGE DOCX ----
+    const documentXml=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
+  xmlns:mo="http://schemas.microsoft.com/office/mac/office/2008/main"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:mv="urn:schemas-microsoft-com:mac:vml"
+  xmlns:o="urn:schemas-microsoft-com:office:office"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
+  xmlns:v="urn:schemas-microsoft-com:vml"
+  xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing"
+  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+  xmlns:w10="urn:schemas-microsoft-com:office:word"
+  xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"
+  xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
+  xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk"
+  xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"
+  xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+  mc:Ignorable="w14 wp14">
+<w:body>
+${body}
+<w:sectPr>
+  <w:pgSz w:w="11906" w:h="16838"/>
+  <w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="709" w:footer="709" w:gutter="0"/>
+</w:sectPr>
+</w:body>
+</w:document>`;
+
+    const relsXml=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+
+    const stylesXml=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault><w:rPr>
+      <w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>
+      <w:sz w:val="20"/><w:szCs w:val="20"/>
+    </w:rPr></w:rPrDefault>
+  </w:docDefaults>
+</w:styles>`;
+
+    const appXml=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">
+  <Application>Outil Credit Microfinance</Application>
+</Properties>`;
+
+    const coreXml=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+  xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <dc:title>Fiche Credit - ${esc(nom)}</dc:title>
+  <dc:creator>Sylvanus BABA</dc:creator>
+</cp:coreProperties>`;
+
+    const contentTypesXml=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+</Types>`;
+
+    const packageRelsXml=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>`;
+
+    const zip=new JSZip();
+    zip.file('[Content_Types].xml',contentTypesXml);
+    zip.file('_rels/.rels',packageRelsXml);
+    zip.file('word/document.xml',documentXml);
+    zip.file('word/styles.xml',stylesXml);
+    zip.file('word/_rels/document.xml.rels',relsXml);
+    zip.file('docProps/app.xml',appXml);
+    zip.file('docProps/core.xml',coreXml);
+
+    const blob=await zip.generateAsync({type:'blob',mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download='Fiche_Credit_'+(nom||'client').replace(/\s+/g,'_')+'_'+dateAujourd.replace(/\//g,'-')+'.docx';
+    a.click();
+    URL.revokeObjectURL(url);
+    btn.textContent='Telecharger Word (.docx)';btn.disabled=false;
+  }catch(e){
+    console.error(e);
+    btn.textContent='Telecharger Word (.docx)';btn.disabled=false;
+    alert('Erreur : '+e.message);
+  }
+}
+</script>
+
+<!-- PANNEAU DOSSIERS FIREBASE -->
+<div id="dossiers-overlay" onclick="if(event.target===this)window.fermerPanneauDossiers()">
+  <div id="dossiers-panel">
+    <div id="dossiers-panel-header">
+      <h2>📂 Mes dossiers</h2>
+      <button onclick="window.fermerPanneauDossiers()" style="background:none;border:none;color:#888;font-size:1.2rem;cursor:pointer;">✕</button>
+    </div>
+    <input id="dossiers-search" type="text" placeholder="🔍 Rechercher par nom client..." oninput="window.chargerListeDossiers(this.value)">
+    <div id="firebase-liste"><p style="color:var(--gris);font-size:0.82rem;padding:16px;">Cliquez sur Mes dossiers pour charger la liste.</p></div>
+  </div>
+</div>
+
+<!-- OVERLAY HISTORIQUE -->
+<div id="historique-overlay" onclick="if(event.target===this)this.style.display='none'">
+  <div id="historique-box">
+    <div id="historique-box-header">
+      <span>🕐 Historique des versions</span>
+      <button onclick="document.getElementById('historique-overlay').style.display='none'" style="background:none;border:none;color:#888;font-size:1.1rem;cursor:pointer;">✕</button>
+    </div>
+    <div id="historique-panel" style="padding:16px;color:var(--gris);font-size:0.84rem;">Ouvre d'abord un dossier.</div>
+  </div>
+</div>
+
+<!-- BARRE DE NOTIFICATION -->
+<div id="notif-bar"></div>
+
+</body>
+</html>
